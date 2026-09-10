@@ -37,7 +37,7 @@
 - **workbuddy-switch**（[changexbc/workbuddy-switch](https://github.com/changexbc/workbuddy-switch)）：MIT 许可，
   允许使用、修改、再分发，本仓库已保留其 `LICENSE` 与版权声明。
 - **workbuddy2api**（[Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)）：
-  上游仓库未包含 LICENSE 文件。本项目**已取得原作者授权**后进行公开分发。
+  MIT 许可（上游 2026-09-10 采用）。本项目**已取得原作者授权**后公开分发。
 
 来源与授权细节见 [NOTICE](./NOTICE) 与上方的「这是什么」。
 
@@ -53,6 +53,10 @@
 
 OpenAI 兼容接口：`/v1/chat/completions`（流式 / 非流式）、`/v1/models`，
 具备账号池轮转、熔断与冷却、会话粘性、定时签到保活、指纹脱敏、状态持久化。
+
+**猫猫旅行**：随签到时点（09/21 点）自动巡检，对每个可用账号推进一趟 ——
+无猫则同意协议并领养，有猫则按状态派出 / 领奖。账号间限速 800ms 避免风控。
+禁用账号跳过；查询失败只跳过该账号本轮（不强刷 token，交给 22:00 保活）。
 
 提供**两种工作模式**，可在「兼容网关」页面随时切换：
 
@@ -144,6 +148,8 @@ export OPENAI_API_KEY=<你在页面里设置的 api_key>
 ## 已知限制
 
 - **仅 Windows 实测**：macOS / Linux 的构建脚本尚未验证。
+- **猫猫旅行有两处入口**：网关侧随签到自动执行（09/21 点）；App 侧也有手动/自动
+  旅行。二者调用同一上游接口且按自然日幂等（每日上限 1 次/天），同时开启不会重复派猫。
 - **Windows 需 WebView2 Runtime**：Win10/11 一般已内置。若缺失，请安装
   [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
 - **GNU(MinGW) 构建的额外要求**：用 MinGW 而非 MSVC 编译时，需把 `WebView2Loader.dll`

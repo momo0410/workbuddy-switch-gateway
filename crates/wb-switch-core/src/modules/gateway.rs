@@ -29,6 +29,12 @@ use crate::modules::config::{atomic_write, now_ms, store_dir};
 
 /// 网关配置文件名（放在 ~/.wb-switch/ 下，与账号库同目录）。
 const GATEWAY_CONFIG: &str = "gateway_config.json";
+
+/// 上游网关在 /healthz 透出的身份标识（响应头 X-Service + 响应体 service 字段）。
+///
+/// 用途：宿主（本项目）托管网关子进程时，用它识别「同端口上的另一个服务」
+/// 冒充应答造成的假启动成功。
+const GATEWAY_SERVICE_NAME: &str = "workbuddy2api";
 /// 网关凭证目录名（auths/）。
 const GATEWAY_AUTH_DIR: &str = "gateway_auths";
 /// 网关状态文件名（账号池冷却/熔断状态持久化）。
@@ -643,7 +649,14 @@ fn write_native_config(cfg: &Value) -> Result<PathBuf, String> {
         "auth_dir": auth_dir.to_string_lossy(),
         "state_file": state_file.to_string_lossy(),
         "cooldown": { "soft_rate": "60s" },
-        "schedule": { "checkin_hours": [9, 21], "keepalive_hours": [22] },
+        "schedule": {
+            "checkin_hours": [9, 21],
+            "keepalive_hours": [22],
+            // 缺省 true；false = 关签到（猫猫旅行搭签到便车，因此也随之停摆）
+            "checkin_enabled": cfg.get("checkin_enabled").and_then(Value::as_bool).unwrap_or(true),
+            // 缺省 true；false = 关 token 保活
+            "keepalive_enabled": cfg.get("keepalive_enabled").and_then(Value::as_bool).unwrap_or(true),
+        },
         "upstream": {
             "timeout_seconds": 120,
             "header_timeout_seconds": 120,
@@ -728,23 +741,49 @@ pub async fn probe_health(port: u16, timeout_ms: u64) -> Result<Value, String> {
     match client.get(&url).send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            // 必须在 text() 之前取出响应头 —— text() 会消费 resp（E0382）
+            let hdr_service = resp
+                .headers()
+                .get("X-Service")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
             let body = resp.text().await.unwrap_or_default();
             let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({ "raw": body }));
 
-            // 身份校验：/status 需要 api_key。若配置了 key 却拿到 401，
-            // 说明应答者是同端口上的**其他**网关（旧容器等），不能当作启动成功。
-            let cfg = load_gateway_config();
-            let key = cfg.get("api_key").and_then(Value::as_str).unwrap_or("");
+            // 身份校验：确认应答者确实是本项目的网关，而不是恰好占用同端口的
+            // 其他服务（Docker 里的旧容器等）—— 否则会报告「假启动成功」。
+            //
+            // 优先用上游自 v0.2 起在 /healthz 提供的身份标识：
+            //   - X-Service 响应头
+            //   - 响应体 service 字段
+            // 值均为 "workbuddy2api"。这比用 api_key 校验更可靠：
+            // api_key 为空（未鉴权）时后者完全失去作用。
+            //
+            // 兼容旧版网关（无标识）：回退到「用 api_key 访问 /status 是否通」。
             let mut identity_ok = true;
-            if !key.is_empty() {
-                let surl = format!("http://127.0.0.1:{port}/status");
-                if let Ok(sresp) = client
-                    .get(&surl)
-                    .header("Authorization", format!("Bearer {key}"))
-                    .send()
-                    .await
-                {
-                    identity_ok = sresp.status().as_u16() == 200;
+            let body_service = parsed
+                .get("service")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+
+            if !hdr_service.is_empty() || !body_service.is_empty() {
+                identity_ok = hdr_service == GATEWAY_SERVICE_NAME
+                    || body_service == GATEWAY_SERVICE_NAME;
+            } else {
+                let cfg = load_gateway_config();
+                let key = cfg.get("api_key").and_then(Value::as_str).unwrap_or("");
+                if !key.is_empty() {
+                    let surl = format!("http://127.0.0.1:{port}/status");
+                    if let Ok(sresp) = client
+                        .get(&surl)
+                        .header("Authorization", format!("Bearer {key}"))
+                        .send()
+                        .await
+                    {
+                        identity_ok = sresp.status().as_u16() == 200;
+                    }
                 }
             }
 
