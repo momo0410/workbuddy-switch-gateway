@@ -7,6 +7,8 @@ pub mod config;
 pub mod credit_usage;
 pub mod credits;
 pub mod export_import;
+pub mod gateway;
+pub mod gateway_embed;
 pub mod oauth;
 pub mod official_usage;
 pub mod process;

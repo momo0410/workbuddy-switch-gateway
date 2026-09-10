@@ -585,3 +585,111 @@ pub fn set_launch_at_login_enabled(_app: tauri::AppHandle, enabled: bool) -> Res
         Err("当前平台不支持开机自启".to_string())
     }
 }
+
+// ---------------------------------------------------------------------------
+// 兼容网关（workbuddy2api）—— 桌面 GUI 命令
+//
+// 与 server 版共用 wb_switch_core::modules::gateway，因此行为一致：
+// 同一套端口检测、账号导出、进程托管逻辑。
+// 区别：GUI 直接在进程内调用，不起 HTTP 服务，也不需要浏览器。
+// ---------------------------------------------------------------------------
+
+/// 网关运行态 + 账号池详情。
+#[tauri::command]
+pub async fn get_gateway_status() -> Result<Value, String> {
+    Ok(wb_switch_core::modules::gateway::gateway_status().await)
+}
+
+/// 读取网关配置。
+#[tauri::command]
+pub fn get_gateway_config() -> Result<Value, String> {
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    let exe = wb_switch_core::modules::gateway::resolve_gateway_exe();
+    Ok(json!({
+        "config": cfg,
+        "exeFound": exe.is_some(),
+        "exePath": exe.map(|p| p.to_string_lossy().to_string()),
+        "exeSource": wb_switch_core::modules::gateway::gateway_source(),
+        "authDir": wb_switch_core::modules::gateway::gateway_auth_dir().to_string_lossy(),
+    }))
+}
+
+/// 保存网关配置（仅覆盖传入字段）。
+///
+/// 前端以 camelCase 传参（`{ port, apiKey, autoStart }`），故此处声明
+/// `rename_all = "camelCase"`；只把出现的字段透传给 core 做浅合并，
+/// 未传字段沿用磁盘上的现有值。
+#[tauri::command(rename_all = "camelCase")]
+pub fn save_gateway_config(
+    port: Option<u16>,
+    api_key: Option<String>,
+    auto_start: Option<bool>,
+) -> Result<Value, String> {
+    let mut patch = serde_json::Map::new();
+    if let Some(p) = port {
+        patch.insert("port".to_string(), json!(p));
+    }
+    if let Some(k) = api_key {
+        patch.insert("api_key".to_string(), json!(k));
+    }
+    if let Some(a) = auto_start {
+        patch.insert("auto_start".to_string(), json!(a));
+    }
+    let v = wb_switch_core::modules::gateway::save_gateway_config(&Value::Object(patch))?;
+    Ok(json!({ "config": v }))
+}
+
+/// 检测端口是否可用。
+#[tauri::command]
+pub fn check_gateway_port(port: u16) -> Result<Value, String> {
+    if port == 0 {
+        return Err("端口号需在 1-65535 之间".to_string());
+    }
+    Ok(wb_switch_core::modules::gateway::inspect_port(port))
+}
+
+/// 启动网关；传 port 时先保存再启动（前端「选端口 → 启动」一步完成）。
+#[tauri::command]
+pub async fn start_gateway(port: Option<u16>) -> Result<Value, String> {
+    if let Some(p) = port {
+        if p == 0 {
+            return Err("端口号需在 1-65535 之间".to_string());
+        }
+        wb_switch_core::modules::gateway::save_gateway_config(&json!({ "port": p }))?;
+    }
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    match wb_switch_core::modules::gateway::start_gateway(&cfg).await {
+        Ok(v) => {
+            wb_switch_core::modules::gateway::update_runtime_state("started", None);
+            Ok(v)
+        }
+        Err(e) => {
+            let msg = e.clone();
+            wb_switch_core::modules::gateway::update_runtime_state("failed", Some(e));
+            Err(msg)
+        }
+    }
+}
+
+/// 停止网关。
+#[tauri::command]
+pub fn stop_gateway() -> Result<Value, String> {
+    let r = wb_switch_core::modules::gateway::stop_gateway();
+    wb_switch_core::modules::gateway::update_runtime_state("stopped", None);
+    Ok(r)
+}
+
+/// 重启网关（应用新配置/新账号）。
+#[tauri::command]
+pub async fn restart_gateway() -> Result<Value, String> {
+    wb_switch_core::modules::gateway::stop_gateway();
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    wb_switch_core::modules::gateway::start_gateway(&cfg).await
+}
+
+/// 双向同步账号；auto_reload 时按需重启网关。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sync_gateway_accounts(auto_reload: Option<bool>) -> Result<Value, String> {
+    Ok(wb_switch_core::modules::gateway::sync_and_reload(auto_reload.unwrap_or(true)).await)
+}

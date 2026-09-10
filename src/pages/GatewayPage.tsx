@@ -1,0 +1,575 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  Loader2,
+  Play,
+  RefreshCw,
+  RotateCw,
+  Save,
+  Server,
+  Square,
+  Wand2,
+  Zap,
+} from "lucide-react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import * as api from "@/lib/api";
+import type {
+  GatewayConfig,
+  GatewayPoolAccount,
+  GatewayPortCheck,
+  GatewayStatus,
+} from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+
+interface SectionProps {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}
+
+function Section({ title, description, children }: SectionProps) {
+  return (
+    <section className="min-w-0 space-y-2.5">
+      <div className="px-1">
+        <h2 className="text-[13px] font-medium leading-5">{title}</h2>
+        {description ? (
+          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">{children}</Card>
+    </section>
+  );
+}
+
+function Row({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "mx-4 flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border/50 py-2.5 last:border-b-0 sm:mx-5",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: "ok" | "warn" | "off" }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border/60 px-3 py-2">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div
+        className={cn(
+          "mt-0.5 truncate text-[15px] font-medium tabular-nums",
+          tone === "ok" && "text-emerald-600 dark:text-emerald-400",
+          tone === "warn" && "text-amber-600 dark:text-amber-400",
+          tone === "off" && "text-muted-foreground",
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** 从监听地址（":7863" / "0.0.0.0:7863"）解析端口。 */
+function portOf(listen: string | undefined): number {
+  if (!listen) return 0;
+  const m = listen.match(/(\d{1,5})\s*$/);
+  return m ? Number(m[1]) : 0;
+}
+
+/** 端口合法性：1-65535，且不是 1024 以下的特权端口（可用但有提示）。 */
+function validatePort(value: number): string | null {
+  if (!Number.isInteger(value) || value < 1 || value > 65535) return "端口需在 1-65535 之间";
+  return null;
+}
+
+/** 网关账号池账号卡片：展示冷却/熔断/在途等运行态。 */
+function PoolAccountRow({ acc }: { acc: GatewayPoolAccount }) {
+  const state = acc.disabled
+    ? { label: "已禁用", cls: "bg-destructive/10 text-destructive" }
+    : acc.cooling
+      ? { label: "冷却中", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400" }
+      : { label: "健康", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" };
+  return (
+    <div className="mx-4 flex min-w-0 items-center gap-3 border-b border-border/50 py-2.5 last:border-b-0 sm:mx-5">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm">{acc.nickname || acc.uid}</div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">{acc.uid}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-3 text-[11px] tabular-nums text-muted-foreground">
+        {typeof acc.in_flight === "number" && acc.in_flight > 0 ? <span>在途 {acc.in_flight}</span> : null}
+        {typeof acc.success_count === "number" && acc.success_count > 0 ? <span>成功 {acc.success_count}</span> : null}
+        {typeof acc.err_total === "number" && acc.err_total > 0 ? <span>失败 {acc.err_total}</span> : null}
+        <span
+          className={cn("rounded-md px-1.5 py-0.5 font-medium", state.cls)}
+          title={acc.reason || undefined}
+        >
+          {state.label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export default function GatewayPage() {
+  const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [port, setPort] = useState(7863);
+  const [apiKey, setApiKey] = useState("");
+  const [autoStart, setAutoStart] = useState(false);
+  /** 端口可用性检测结果（null = 尚未检测/正在检测）。 */
+  const [portCheck, setPortCheck] = useState<GatewayPortCheck | null>(null);
+  const [checkingPort, setCheckingPort] = useState(false);
+
+  const applyConfig = useCallback((cfg: GatewayConfig) => {
+    setPort(cfg.port || portOf(cfg.listen) || 7863);
+    setApiKey(cfg.api_key || "");
+    setAutoStart(Boolean(cfg.auto_start));
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await api.getGatewayStatus();
+      setStatus(s);
+      applyConfig(s.config);
+      setError(null);
+    } catch (e) {
+      setError(api.asError(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyConfig]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  // 端口变化后防抖检测可用性。
+  // 网关正跑在自己的端口上时该端口必然「被占用」，此时不报冲突。
+  useEffect(() => {
+    const invalid = validatePort(port);
+    if (invalid) {
+      setPortCheck(null);
+      return;
+    }
+    let cancelled = false;
+    setCheckingPort(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await api.checkGatewayPort(port);
+        if (!cancelled) setPortCheck(res);
+      } catch {
+        if (!cancelled) setPortCheck(null);
+      } finally {
+        if (!cancelled) setCheckingPort(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      setCheckingPort(false);
+    };
+  }, [port, status?.running]);
+
+  /** 自动挑一个空闲端口。 */
+  async function pickFreePort() {
+    setCheckingPort(true);
+    try {
+      // 从当前端口往后找；当前端口自身被网关占用时也能跳过
+      for (let candidate = Math.max(port, 1024); candidate < port + 60; candidate += 1) {
+        const res = await api.checkGatewayPort(candidate);
+        if (res.available || res.inUseByGateway) {
+          setPort(candidate);
+          setPortCheck(res);
+          toast.success(`已选择端口 ${candidate}`);
+          return;
+        }
+      }
+      toast.error("未找到空闲端口，请手动指定");
+    } catch (e) {
+      toast.error(api.asError(e));
+    } finally {
+      setCheckingPort(false);
+    }
+  }
+
+  /** 端口状态文案与配色。 */
+  const portState = (() => {
+    const invalid = validatePort(port);
+    if (invalid) return { label: invalid, tone: "bad" as const };
+    if (checkingPort || !portCheck) return { label: "检测中…", tone: "muted" as const };
+    // 网关自己正跑在该端口上时，端口「被占用」是正常的
+    if (portCheck.inUseByGateway) return { label: "当前网关正在使用", tone: "ok" as const };
+    if (portCheck.available) {
+      return portCheck.reserved
+        ? { label: "可用（特权端口，可能需管理员权限）", tone: "warn" as const }
+        : { label: "可用", tone: "ok" as const };
+    }
+    return {
+      label: portCheck.suggest ? `已被占用，建议改用 ${portCheck.suggest}` : "已被占用",
+      tone: "bad" as const,
+    };
+  })();
+
+  async function run(label: string, fn: () => Promise<unknown>) {
+    setBusy(label);
+    try {
+      await fn();
+      await refresh();
+    } catch (e) {
+      toast.error(api.asError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const pool = status?.pool ?? null;
+  const poolAccounts = pool?.accounts ?? [];
+  const running = Boolean(status?.running);
+
+  const endpoint = status?.openaiBase ?? "";
+  const endpointHint = useMemo(() => {
+    if (!endpoint) return "";
+    return `OPENAI_BASE_URL=${endpoint}`;
+  }, [endpoint]);
+
+  async function copyEndpoint() {
+    if (!endpoint) return;
+    try {
+      await navigator.clipboard.writeText(endpoint);
+      toast.success("已复制接口地址");
+    } catch {
+      toast.error("复制失败，请手动选择文本");
+    }
+  }
+
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-6 px-5 py-6 sm:px-6">
+      <header className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="flex items-center gap-2 text-lg font-medium leading-6">
+            <Server className="size-4.5 shrink-0" />
+            兼容网关
+          </h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            把账号库里的账号变成 OpenAI 兼容接口，供任意 SDK / 客户端使用。
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="shrink-0"
+          onClick={() => void refresh()}
+          aria-label="刷新"
+          disabled={busy !== null}
+        >
+          <RefreshCw className={cn("size-4", busy === "refresh" && "animate-spin")} />
+        </Button>
+      </header>
+
+      {error ? (
+        <Alert variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>无法读取网关状态</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {status && !status.exeFound ? (
+        <Alert>
+          <AlertTriangle />
+          <AlertTitle>未找到网关可执行文件</AlertTitle>
+          <AlertDescription>
+            请把 <code className="font-mono">gateway.exe</code> 放到 workbuddy-switch
+            同目录，或用环境变量 <code className="font-mono">WB_SWITCH_GATEWAY_BIN</code> 指定路径。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      <Section title="运行状态" description="账号池状态每 5 秒自动刷新">
+        <div className="mx-4 grid grid-cols-2 gap-2 py-3 sm:mx-5 sm:grid-cols-4">
+          <Stat
+            label="服务"
+            value={loading ? "…" : running ? (status?.reachable ? "运行中" : "已启动") : "未运行"}
+            tone={running ? "ok" : "off"}
+          />
+          <Stat label="健康账号" value={pool?.healthy ?? "—"} tone={(pool?.healthy ?? 0) > 0 ? "ok" : "warn"} />
+          <Stat label="冷却 / 禁用" value={`${pool?.cooling ?? 0} / ${pool?.disabled ?? 0}`} tone="warn" />
+          <Stat label="粘性会话" value={pool?.sticky_sessions ?? 0} />
+        </div>
+
+        <Row>
+          <div className="min-w-0">
+            <div className="text-[13px]">OpenAI 兼容接口</div>
+            <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+              {endpoint || "—"}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => void copyEndpoint()}
+              disabled={!endpoint}
+              aria-label="复制接口地址"
+            >
+              <Copy className="size-3.5" />
+            </Button>
+            {running ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={() => void run("restart", () => api.restartGateway())}
+                  disabled={busy !== null}
+                >
+                  {busy === "restart" ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />}
+                  重启
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={() => void run("stop", () => api.stopGateway())}
+                  disabled={busy !== null}
+                >
+                  {busy === "stop" ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
+                  停止
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => void run("start", () => api.startGateway(port))}
+                disabled={busy !== null || !status?.exeFound || portState.tone === "bad"}
+              >
+                {busy === "start" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                启动网关
+              </Button>
+            )}
+          </div>
+        </Row>
+
+        <Row>
+          <div className="min-w-0">
+            <div className="text-[13px]">账号同步</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              账号库 {status?.accountsInLibrary ?? "—"} 个账号 · 变更会自动同步
+              {running ? "，网关运行中会自动重启以加载新账号" : ""}
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 text-xs"
+            onClick={() => void run("sync", () => api.syncGatewayAccounts(true))}
+            disabled={busy !== null}
+          >
+            {busy === "sync" ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />}
+            立即同步
+          </Button>
+        </Row>
+      </Section>
+
+      <Section title="接口配置">
+        <Row className="flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+          <div className="min-w-0">
+            <Label htmlFor="gw-port" className="text-[13px] font-normal">
+              服务端口
+            </Label>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px]">
+              <span
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  portState.tone === "ok" && "bg-emerald-500",
+                  portState.tone === "warn" && "bg-amber-500",
+                  portState.tone === "bad" && "bg-destructive",
+                  portState.tone === "muted" && "bg-muted-foreground/40",
+                )}
+                aria-hidden="true"
+              />
+              <span
+                className={cn(
+                  "text-muted-foreground",
+                  portState.tone === "bad" && "text-destructive",
+                  portState.tone === "warn" && "text-amber-600 dark:text-amber-400",
+                )}
+              >
+                {portState.label}
+              </span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Input
+              id="gw-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={Number.isFinite(port) ? port : ""}
+              onChange={(e) => setPort(Number(e.target.value))}
+              placeholder="7863"
+              className="h-8 w-24 font-mono text-xs"
+              aria-invalid={portState.tone === "bad"}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 px-2 text-xs"
+              onClick={() => void pickFreePort()}
+              disabled={checkingPort}
+              title="自动挑一个空闲端口"
+            >
+              {checkingPort ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="size-3.5" />
+              )}
+              自动
+            </Button>
+            {portCheck?.suggest && !portCheck.available ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setPort(portCheck.suggest as number)}
+              >
+                用 {portCheck.suggest}
+              </Button>
+            ) : null}
+          </div>
+        </Row>
+        <Row>
+          <div className="min-w-0">
+            <Label htmlFor="gw-key" className="text-[13px] font-normal">
+              API Key
+            </Label>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">留空不鉴权；公网部署务必设置</div>
+          </div>
+          <Input
+            id="gw-key"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="sk-..."
+            className="h-8 w-44 shrink-0 font-mono text-xs"
+          />
+        </Row>
+        <Row>
+          <div className="min-w-0">
+            <div className="text-[13px]">随 App 启动</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">打开本应用时自动启动网关</div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Switch checked={autoStart} onCheckedChange={setAutoStart} />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              onClick={() =>
+                void run("save", async () => {
+                  await api.saveGatewayConfig({ port, api_key: apiKey, auto_start: autoStart });
+                  toast.success("配置已保存");
+                })
+              }
+              disabled={busy !== null}
+            >
+              {busy === "save" ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+              保存
+            </Button>
+          </div>
+        </Row>
+      </Section>
+
+      <Section title="账号池" description={pool ? `网关侧运行态（redis=${pool.redis_mode ?? "noop"}）` : "启动网关后可见"}>
+        {poolAccounts.length > 0 ? (
+          poolAccounts.map((acc) => <PoolAccountRow key={acc.uid} acc={acc} />)
+        ) : (
+          <Row className="justify-center">
+            <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
+              {running ? (
+                <>
+                  <Activity className="size-3.5" />
+                  账号池为空，请先同步账号并重启网关
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="size-3.5" />
+                  网关未运行
+                </>
+              )}
+            </div>
+          </Row>
+        )}
+      </Section>
+
+      <Section title="客户端接入">
+        <div className="space-y-2 px-4 py-3 sm:px-5">
+          <pre className="overflow-x-auto rounded-lg bg-muted/50 px-3 py-2 text-[11px] leading-relaxed">
+            <code>{endpointHint || "OPENAI_BASE_URL=http://127.0.0.1:7863/v1"}
+{`OPENAI_API_KEY=${apiKey || "<你的 api_key>"}`}</code>
+          </pre>
+          <p className="text-[11px] text-muted-foreground">
+            支持 <code className="font-mono">/v1/chat/completions</code>（流式与非流式）与{" "}
+            <code className="font-mono">/v1/models</code>，现有 OpenAI SDK 可直接接入。
+          </p>
+        </div>
+      </Section>
+
+      <Section title="诊断">
+        <Row>
+          <div className="min-w-0">
+            <div className="text-[13px]">网关账号凭证目录</div>
+            <div className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
+              {status?.authDir || "—"}
+            </div>
+          </div>
+        </Row>
+        <Row>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[13px]">
+              网关可执行文件
+              <Badge variant="secondary" className="text-[10px]">
+                {status?.exeSource === "embedded"
+                  ? "内嵌"
+                  : status?.exeSource === "env"
+                    ? "环境变量"
+                    : "外部文件"}
+              </Badge>
+            </div>
+            <div className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
+              {status?.exePath || "未找到"}
+            </div>
+            {status?.exeSource === "embedded" ? (
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                随主程序分发，首次使用自动释放到本机缓存
+              </div>
+            ) : null}
+          </div>
+          <Badge variant={status?.exeFound ? "secondary" : "destructive"} className="shrink-0 text-[10px]">
+            {status?.exeFound ? "已就绪" : "缺失"}
+          </Badge>
+        </Row>
+      </Section>
+    </div>
+  );
+}

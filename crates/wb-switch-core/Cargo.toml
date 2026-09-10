@@ -12,6 +12,8 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 chrono = "0.4"
+# 内嵌压缩后的 gateway.exe（单文件分发），运行时解压到缓存
+flate2 = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # CodeBuddy CN IDE Safe Storage (state.vscdb secret inject)
@@ -25,3 +27,6 @@ base64 = "0.22"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
+[build-dependencies]
+# 构建期压缩内嵌网关
+flate2 = "1"

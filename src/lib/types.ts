@@ -416,3 +416,109 @@ export interface CodeBuddyCnIdeSwitchResult {
   message?: string;
 }
 
+
+// ---------------------------------------------------------------------------
+// 网关（workbuddy2api）集成
+// ---------------------------------------------------------------------------
+
+/** 网关配置（持久化在 ~/.wb-switch/gateway/gateway_config.json）。 */
+export interface GatewayConfig {
+  /** 是否已启用（启动过即为 true）。 */
+  enabled: boolean;
+  /** 服务端口（权威字段，前端口选择器直接编辑它）。 */
+  port: number;
+  /** 监听地址，由 port 派生，如 ":7863"。 */
+  listen: string;
+  /** OpenAI 兼容接口的鉴权密钥；空 = 不鉴权。 */
+  api_key: string;
+  /** 随 App 启动而自动拉起。 */
+  auto_start: boolean;
+  last_status?: string | null;
+  last_error?: string | null;
+}
+
+/** 网关账号池中的单个账号运行态（来自网关 /status）。 */
+export interface GatewayPoolAccount {
+  uid: string;
+  nickname?: string;
+  credits?: number;
+  cooling?: boolean;
+  cool_kind?: string;
+  cool_remaining_sec?: number;
+  disabled?: boolean;
+  reason?: string;
+  success_count?: number;
+  err_total?: number;
+  in_flight?: number;
+}
+
+/** 网关 /status 响应。 */
+export interface GatewayPool {
+  accounts?: GatewayPoolAccount[];
+  total?: number;
+  healthy?: number;
+  cooling?: number;
+  disabled?: number;
+  in_flight_full?: number;
+  sticky_sessions?: number;
+  redis_mode?: string;
+}
+
+/** 网关综合状态。 */
+export interface GatewayStatus {
+  running: boolean;
+  reachable: boolean;
+  base: string;
+  openaiBase: string;
+  port: number;
+  exePath: string | null;
+  exeFound: boolean;
+  /** 网关来源：embedded=内嵌在单个 exe 内 / env=环境变量指定 / external=外部文件。 */
+  exeSource?: "embedded" | "env" | "external";
+  /** 配置端口当前是否空闲（网关运行时该端口被自己占用，属正常）。 */
+  portAvailable?: boolean;
+  authDir: string;
+  accountsInLibrary: number;
+  config: GatewayConfig;
+  health: { reachable?: boolean; healthy?: boolean; detail?: unknown } | null;
+  pool: GatewayPool | null;
+}
+
+/** GET /api/gateway/config 响应。 */
+export interface GatewayConfigResult {
+  config: GatewayConfig;
+  exeFound: boolean;
+  exePath: string | null;
+  authDir: string;
+}
+
+/** POST /api/gateway/{start,restart} 响应。 */
+export interface GatewayStartResult {
+  started?: boolean;
+  base?: string;
+  port?: number;
+  accounts?: number;
+  health?: unknown;
+}
+
+/** POST /api/gateway/sync 响应。 */
+export interface GatewaySyncResult {
+  ok: boolean;
+  accounts?: number;
+  changed?: string[];
+  updatedFromGateway?: string[];
+  reloaded?: boolean;
+  error?: string;
+}
+
+/** POST /api/gateway/port-check 响应。 */
+export interface GatewayPortCheck {
+  port: number;
+  available: boolean;
+  /** 是否为 1024 以下的特权端口。 */
+  reserved: boolean;
+  /** 该端口当前是否被本网关自身占用。 */
+  inUseByGateway: boolean;
+  /** 端口被占用时给出的可用建议端口。 */
+  suggest: number | null;
+}

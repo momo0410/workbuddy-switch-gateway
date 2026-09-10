@@ -105,6 +105,14 @@ pub fn router() -> Router {
         .route("/api/rotate/run", post(api_rotate_run))
         .route("/api/rotate/logs", get(api_rotate_logs))
         .route("/api/refresh-token", post(api_refresh_token))
+        // ---- 网关（workbuddy2api）集成 ----
+        .route("/api/gateway/status", get(api_gateway_status))
+        .route("/api/gateway/config", get(api_gateway_config).post(api_save_gateway_config))
+        .route("/api/gateway/start", post(api_gateway_start))
+        .route("/api/gateway/port-check", post(api_gateway_port_check))
+        .route("/api/gateway/stop", post(api_gateway_stop))
+        .route("/api/gateway/sync", post(api_gateway_sync))
+        .route("/api/gateway/restart", post(api_gateway_restart))
         .route("/api/update/check", get(api_update_check))
         .route(
             "/api/update/config",
@@ -670,4 +678,98 @@ mod tests {
         assert_eq!(item["ok"], false);
         assert_eq!(item["error"], "status failed");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 网关（workbuddy2api）集成
+// ---------------------------------------------------------------------------
+
+/// GET /api/gateway/status —— 网关运行态 + 账号池详情 + 可执行文件探测结果。
+async fn api_gateway_status() -> Response {
+    json_ok(wb_switch_core::modules::gateway::gateway_status().await)
+}
+
+/// GET /api/gateway/config —— 读取网关配置（含可执行文件是否存在）。
+async fn api_gateway_config() -> Response {
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    let exe = wb_switch_core::modules::gateway::resolve_gateway_exe();
+    json_ok(json!({
+        "config": cfg,
+        "exeFound": exe.is_some(),
+        "exePath": exe.map(|p| p.to_string_lossy().to_string()),
+        "authDir": wb_switch_core::modules::gateway::gateway_auth_dir().to_string_lossy(),
+    }))
+}
+
+/// POST /api/gateway/config —— 保存网关配置。
+async fn api_save_gateway_config(Json(body): Json<Value>) -> Response {
+    match wb_switch_core::modules::gateway::save_gateway_config(&body) {
+        Ok(v) => json_ok(json!({ "config": v })),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/gateway/start —— 启动网关（可选 body.port 指定端口）。
+///
+/// body 为空时沿用已保存的配置；带 port 时先落盘再启动，这样
+/// 「前端选端口 → 启动」一步完成，不需要用户先手动保存。
+async fn api_gateway_start(Json(body): Json<Value>) -> Response {
+    if let Some(port) = body.get("port").and_then(Value::as_u64) {
+        if !(1..=65535).contains(&port) {
+            return json_err("端口号需在 1-65535 之间".to_string(), StatusCode::BAD_REQUEST);
+        }
+        let patch = json!({ "port": port as u16 });
+        if let Err(e) = wb_switch_core::modules::gateway::save_gateway_config(&patch) {
+            return json_err(e, StatusCode::BAD_REQUEST);
+        }
+    }
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    match wb_switch_core::modules::gateway::start_gateway(&cfg).await {
+        Ok(v) => {
+            wb_switch_core::modules::gateway::update_runtime_state("started", None);
+            json_ok(v)
+        }
+        Err(e) => {
+            wb_switch_core::modules::gateway::update_runtime_state("failed", Some(e.clone()));
+            json_err(e, StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
+/// POST /api/gateway/stop —— 停止网关。
+async fn api_gateway_stop() -> Response {
+    let r = wb_switch_core::modules::gateway::stop_gateway();
+    wb_switch_core::modules::gateway::update_runtime_state("stopped", None);
+    json_ok(r)
+}
+
+/// POST /api/gateway/restart —— 重启网关（应用新配置/新账号）。
+async fn api_gateway_restart() -> Response {
+    wb_switch_core::modules::gateway::stop_gateway();
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    match wb_switch_core::modules::gateway::start_gateway(&cfg).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/gateway/sync —— 双向同步账号；body.autoReload=true 时按需重启网关。
+async fn api_gateway_sync(Json(body): Json<Value>) -> Response {
+    let reload = body.get("autoReload").and_then(Value::as_bool).unwrap_or(true);
+    json_ok(wb_switch_core::modules::gateway::sync_and_reload(reload).await)
+}
+
+/// POST /api/gateway/port-check —— 检测端口可用性，并给出建议端口。
+///
+/// body: { "port": 7863 }
+async fn api_gateway_port_check(Json(body): Json<Value>) -> Response {
+    let port = body
+        .get("port")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if port == 0 || port > 65535 {
+        return json_err("端口号需在 1-65535 之间".to_string(), StatusCode::BAD_REQUEST);
+    }
+    json_ok(wb_switch_core::modules::gateway::inspect_port(port as u16))
 }

@@ -45,3 +45,10 @@ npm/platform/*/bin/
 .codex/
 .grok/
 /.workbuddy/
+
+# 内嵌网关二进制（构建产物，由 scripts/build-gateway 生成）
+crates/wb-switch-core/embedded/
+
+# 单文件构建产物（不入库，改由 CI/本地构建生成）
+dist-single/
+_rel/

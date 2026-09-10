@@ -74,6 +74,11 @@ fn spawn_background_loops() {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
+    // 账号库 → 网关 自动同步：新增/变更账号会自动进入网关凭证目录，
+    // 网关运行中则自动重启以加载，无需用户手动点「立即同步」。
+    tauri::async_runtime::spawn(async move {
+        modules::gateway::run_auto_sync_loop(30).await;
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -158,6 +163,15 @@ pub fn run() {
             commands::relaunch_app,
             commands::get_launch_at_login_enabled,
             commands::set_launch_at_login_enabled,
+            // 兼容网关
+            commands::get_gateway_status,
+            commands::get_gateway_config,
+            commands::save_gateway_config,
+            commands::check_gateway_port,
+            commands::start_gateway,
+            commands::stop_gateway,
+            commands::restart_gateway,
+            commands::sync_gateway_accounts,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

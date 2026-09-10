@@ -16,6 +16,12 @@ import type {
   CreditStatistics,
   TokenStatistics,
   CopyResult,
+  GatewayConfig,
+  GatewayConfigResult,
+  GatewayStartResult,
+  GatewayStatus,
+  GatewayPortCheck,
+  GatewaySyncResult,
   GithubConfig,
   ImportPreviewAccount,
   ImportResult,
@@ -116,6 +122,15 @@ const ROUTES: Record<string, Route> = {
   save_github_config: { method: "POST", path: "/api/update/config" },
   check_update: { method: "GET", path: "/api/update/check" },
   switch_progress: { method: "GET", path: "/api/switch/progress" },
+  // ---- 网关（workbuddy2api）集成 ----
+  get_gateway_status: { method: "GET", path: "/api/gateway/status" },
+  get_gateway_config: { method: "GET", path: "/api/gateway/config" },
+  save_gateway_config: { method: "POST", path: "/api/gateway/config" },
+  start_gateway: { method: "POST", path: "/api/gateway/start" },
+  check_gateway_port: { method: "POST", path: "/api/gateway/port-check" },
+  stop_gateway: { method: "POST", path: "/api/gateway/stop" },
+  restart_gateway: { method: "POST", path: "/api/gateway/restart" },
+  sync_gateway_accounts: { method: "POST", path: "/api/gateway/sync" },
 };
 
 function queryString(args?: Record<string, unknown>): string {
@@ -495,4 +510,58 @@ export function asError(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return JSON.stringify(e ?? "未知错误");
+}
+
+// ---------------------------------------------------------------------------
+// 网关（workbuddy2api）集成
+// ---------------------------------------------------------------------------
+
+/** 读取网关运行态（含账号池详情）。 */
+export function getGatewayStatus(): Promise<GatewayStatus> {
+  return call<GatewayStatus>("get_gateway_status");
+}
+
+/** 读取网关配置。 */
+export function getGatewayConfig(): Promise<GatewayConfigResult> {
+  return call<GatewayConfigResult>("get_gateway_config");
+}
+
+/**
+ * 保存网关配置。
+ *
+ * 显式把 snake_case 字段转成 camelCase：Tauri 的 `invoke` 按
+ * `#[tauri::command(rename_all = "camelCase")]` 取值，直接透传
+ * `api_key` / `auto_start` 会被静默丢弃（webui 的 HTTP 版则兼容两种写法）。
+ */
+export function saveGatewayConfig(config: Partial<GatewayConfig>): Promise<{ config: GatewayConfig }> {
+  const args: Record<string, unknown> = {};
+  if (config.port !== undefined) args.port = config.port;
+  if (config.api_key !== undefined) args.apiKey = config.api_key;
+  if (config.auto_start !== undefined) args.autoStart = config.auto_start;
+  return call<{ config: GatewayConfig }>("save_gateway_config", args);
+}
+
+/** 启动网关（会把账号库导出为网关凭证）。传 port 可一步指定端口并保存。 */
+export function startGateway(port?: number): Promise<GatewayStartResult> {
+  return call<GatewayStartResult>("start_gateway", port ? { port } : {});
+}
+
+/** 检测端口是否可用；被占用时返回建议端口。 */
+export function checkGatewayPort(port: number): Promise<GatewayPortCheck> {
+  return call<GatewayPortCheck>("check_gateway_port", { port });
+}
+
+/** 停止网关。 */
+export function stopGateway(): Promise<{ stopped: boolean }> {
+  return call<{ stopped: boolean }>("stop_gateway");
+}
+
+/** 重启网关，使新配置/新账号生效。 */
+export function restartGateway(): Promise<GatewayStartResult> {
+  return call<GatewayStartResult>("restart_gateway");
+}
+
+/** 手动触发账号双向同步。 */
+export function syncGatewayAccounts(autoReload = true): Promise<GatewaySyncResult> {
+  return call<GatewaySyncResult>("sync_gateway_accounts", { autoReload });
 }

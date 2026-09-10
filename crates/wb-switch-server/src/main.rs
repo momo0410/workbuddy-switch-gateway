@@ -61,6 +61,11 @@ fn spawn_background_loops() {
         }
     });
 
+    // 账号库 → 网关 自动同步（同 GUI 版行为）。
+    tokio::spawn(async move {
+        wb_switch_core::modules::gateway::run_auto_sync_loop(30).await;
+    });
+
     // 旅行领取：启动立刻查一轮（避免重启后空等 15 分钟漏领），之后按周期检查。
     tokio::spawn(async move {
         let _ = travel::run_travel_claim_cycle().await;

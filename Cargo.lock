@@ -5421,6 +5421,7 @@ dependencies = [
  "cbc",
  "chrono",
  "dirs 5.0.1",
+ "flate2",
  "pbkdf2",
  "reqwest 0.12.28",
  "rusqlite",
