@@ -21,9 +21,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------
-整合改造部分（WorkBuddy Switch Gateway）版权声明：
+本项目（WorkBuddy Switch Gateway）涉及的版权声明：
 
-Copyright (c) 2026 momo0410
+Copyright (c) 2026 wb-switch / changexbc        —— workbuddy-switch 上游
+Copyright (c) 2026 Sliverkiss                   —— workbuddy2api 上游
+Copyright (c) 2026 momo0410                     —— 本项目整合部分
 
-本整合部分同样以 MIT 许可证发布。详见上方 MIT 条款与 NOTICE 文件。
-workbuddy2api 部分的授权状态见 NOTICE，未获授权前不得公开分发。
+以上各方均以 MIT 许可证发布。完整来源说明与改动清单见 NOTICE。
