@@ -422,9 +422,18 @@ export interface CodeBuddyCnIdeSwitchResult {
 // ---------------------------------------------------------------------------
 
 /** 网关配置（持久化在 ~/.wb-switch/gateway/gateway_config.json）。 */
+/* 网关工作模式：
+ * balance —— 负载均衡（默认）：账号池加权随机选号，自动避开冷却/熔断账号
+ * pinned  —— 指定账号：只使用 pinned_uid 对应的那一个账号            */
+export type GatewayMode = "balance" | "pinned";
+
 export interface GatewayConfig {
   /** 是否已启用（启动过即为 true）。 */
   enabled: boolean;
+  /** 网关工作模式。 */
+  mode?: GatewayMode;
+  /** 指定账号模式下锁定的账号 uid。 */
+  pinned_uid?: string | null;
   /** 服务端口（权威字段，前端口选择器直接编辑它）。 */
   port: number;
   /** 监听地址，由 port 派生，如 ":7863"。 */
@@ -477,6 +486,17 @@ export interface GatewayStatus {
   exeSource?: "embedded" | "env" | "external";
   /** 配置端口当前是否空闲（网关运行时该端口被自己占用，属正常）。 */
   portAvailable?: boolean;
+  /** 当前工作模式。 */
+  mode?: GatewayMode;
+  /** 指定账号模式锁定的 uid。 */
+  pinnedUid?: string | null;
+  /** 可选账号列表（供「指定账号」下拉使用）。 */
+  accounts?: Array<{
+    uid: string;
+    nickname?: string;
+    expiresAt?: number;
+    needsRelogin?: boolean;
+  }>;
   authDir: string;
   accountsInLibrary: number;
   config: GatewayConfig;

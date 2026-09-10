@@ -1,6 +1,6 @@
 [package]
 name = "wb-switch-rust"
-version = "0.2.0"
+version = "0.2.1"
 description = "wb-switch —— WorkBuddy 账号切换工具（Rust/Tauri 版）"
 authors = ["apple"]
 edition = "2021"
@@ -12,7 +12,13 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "wb_switch_rust_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 桌面版只需 rlib（iOS 用 staticlib）。
+#
+# 刻意去掉 cdylib：它是 Android 需要的产物类型，会让 GNU 链接器尝试导出
+# 全部符号，而 MinGW 的导出序号上限是 65535 —— 加入依赖后实测达到 161178，
+# 报「export ordinal too large」链接失败。桌面构建不需要 cdylib。
+# 若将来要出 Android 版，请改用 MSVC 工具链并把 cdylib 加回。
+crate-type = ["staticlib", "rlib"]
 
 [features]
 # 默认启用 custom-protocol：不开该 feature 的 `cargo build --release` 会产出加载
@@ -34,6 +40,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# 单实例保护：多开会并发写 accounts.json 并重复启停网关
+tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2.7.2"
 

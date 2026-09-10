@@ -4,6 +4,8 @@ mod commands;
 mod tray;
 
 use std::time::Duration;
+#[cfg(desktop)]
+use tauri::Manager;
 use wb_switch_core::modules;
 
 const SCREENSHOT_DEMO_ENV: &str = "WB_SWITCH_SCREENSHOT_DEMO";
@@ -83,7 +85,34 @@ fn spawn_background_loops() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // 单实例保护：必须最先注册，让第二个实例在做任何事之前就退出。
+    //
+    // 不加保护时多开会造成真实损坏：
+    //   1. 每个实例都会启动 8 个后台任务（签到/保活/轮换/旅行/网关同步），
+    //      并发写同一个 accounts.json → 后写覆盖先写，token 可能被旧值覆盖；
+    //   2. 网关子进程状态是进程内静态变量，实例 A 不知道实例 B 起过网关，
+    //      两边各自启停 → 端口冲突、进程泄漏、孤儿进程；
+    //   3. 托盘出现多个图标，用户无法分辨。
+    //
+    // 第二次启动改为「聚焦已有窗口」，符合用户直觉。
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // 系统自启（--hidden）重复触发时不弹窗打扰
+            if tray::is_silent_startup(args.iter()) {
+                return;
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())

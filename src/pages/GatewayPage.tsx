@@ -10,7 +10,9 @@ import {
   RotateCw,
   Save,
   Server,
+  Shuffle,
   Square,
+  UserRound,
   Wand2,
   Zap,
 } from "lucide-react";
@@ -25,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import type {
   GatewayConfig,
+  GatewayMode,
   GatewayPoolAccount,
   GatewayPortCheck,
   GatewayStatus,
@@ -133,6 +136,9 @@ export default function GatewayPage() {
   const [port, setPort] = useState(7863);
   const [apiKey, setApiKey] = useState("");
   const [autoStart, setAutoStart] = useState(false);
+  /** 网关工作模式：balance 负载均衡 / pinned 指定账号 */
+  const [mode, setMode] = useState<GatewayMode>("balance");
+  const [pinnedUid, setPinnedUid] = useState<string>("");
   /** 端口可用性检测结果（null = 尚未检测/正在检测）。 */
   const [portCheck, setPortCheck] = useState<GatewayPortCheck | null>(null);
   const [checkingPort, setCheckingPort] = useState(false);
@@ -141,6 +147,8 @@ export default function GatewayPage() {
     setPort(cfg.port || portOf(cfg.listen) || 7863);
     setApiKey(cfg.api_key || "");
     setAutoStart(Boolean(cfg.auto_start));
+    setMode(cfg.mode === "pinned" ? "pinned" : "balance");
+    setPinnedUid(cfg.pinned_uid ?? "");
   }, []);
 
   const refresh = useCallback(async () => {
@@ -393,6 +401,74 @@ export default function GatewayPage() {
       </Section>
 
       <Section title="接口配置">
+        {/* 工作模式 */}
+        <Row className="flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+          <div className="min-w-0">
+            <div className="text-[13px]">工作模式</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              {mode === "balance"
+                ? "账号池加权随机选号，自动避开冷却/熔断的账号"
+                : "只使用下方指定的这一个账号"}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              variant={mode === "balance" ? "default" : "outline"}
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-xs"
+              onClick={() => setMode("balance")}
+            >
+              <Shuffle className="size-3.5" />
+              负载均衡
+            </Button>
+            <Button
+              variant={mode === "pinned" ? "default" : "outline"}
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-xs"
+              onClick={() => {
+                setMode("pinned");
+                if (!pinnedUid) {
+                  const first = status?.accounts?.[0];
+                  if (first) setPinnedUid(first.uid);
+                }
+              }}
+            >
+              <UserRound className="size-3.5" />
+              指定账号
+            </Button>
+          </div>
+        </Row>
+
+        {/* 指定账号模式下选择账号 */}
+        {mode === "pinned" ? (
+          <Row className="flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+            <div className="min-w-0">
+              <Label htmlFor="gw-account" className="text-[13px] font-normal">
+                使用账号
+              </Label>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                {status?.accounts?.length
+                  ? `共 ${status.accounts.length} 个账号可选`
+                  : "账号库为空"}
+              </div>
+            </div>
+            <select
+              id="gw-account"
+              value={pinnedUid}
+              onChange={(e) => setPinnedUid(e.target.value)}
+              className="h-8 w-44 shrink-0 rounded-md border border-input bg-background px-2 text-xs"
+            >
+              <option value="">（未选择）</option>
+              {(status?.accounts ?? []).map((a) => (
+                <option key={a.uid} value={a.uid}>
+                  {a.nickname || a.uid.slice(0, 8)}
+                  {a.needsRelogin ? "（需重新登录）" : ""}
+                </option>
+              ))}
+            </select>
+          </Row>
+        ) : null}
+
         <Row className="flex-col items-stretch gap-2 sm:flex-row sm:items-center">
           <div className="min-w-0">
             <Label htmlFor="gw-port" className="text-[13px] font-normal">
@@ -487,7 +563,13 @@ export default function GatewayPage() {
               className="h-7 gap-1.5 text-xs"
               onClick={() =>
                 void run("save", async () => {
-                  await api.saveGatewayConfig({ port, api_key: apiKey, auto_start: autoStart });
+                  await api.saveGatewayConfig({
+                    port,
+                    api_key: apiKey,
+                    auto_start: autoStart,
+                    mode,
+                    pinned_uid: mode === "pinned" ? pinnedUid : null,
+                  });
                   toast.success("配置已保存");
                 })
               }

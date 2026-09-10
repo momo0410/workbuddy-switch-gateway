@@ -538,6 +538,8 @@ export function saveGatewayConfig(config: Partial<GatewayConfig>): Promise<{ con
   if (config.port !== undefined) args.port = config.port;
   if (config.api_key !== undefined) args.apiKey = config.api_key;
   if (config.auto_start !== undefined) args.autoStart = config.auto_start;
+  if (config.mode !== undefined) args.mode = config.mode;
+  if (config.pinned_uid !== undefined) args.pinnedUid = config.pinned_uid;
   return call<{ config: GatewayConfig }>("save_gateway_config", args);
 }
 

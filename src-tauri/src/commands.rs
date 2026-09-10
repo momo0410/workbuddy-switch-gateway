@@ -624,6 +624,8 @@ pub fn save_gateway_config(
     port: Option<u16>,
     api_key: Option<String>,
     auto_start: Option<bool>,
+    mode: Option<String>,
+    pinned_uid: Option<String>,
 ) -> Result<Value, String> {
     let mut patch = serde_json::Map::new();
     if let Some(p) = port {
@@ -634,6 +636,12 @@ pub fn save_gateway_config(
     }
     if let Some(a) = auto_start {
         patch.insert("auto_start".to_string(), json!(a));
+    }
+    if let Some(m) = mode {
+        patch.insert("mode".to_string(), json!(m));
+    }
+    if let Some(u) = pinned_uid {
+        patch.insert("pinned_uid".to_string(), json!(u));
     }
     let v = wb_switch_core::modules::gateway::save_gateway_config(&Value::Object(patch))?;
     Ok(json!({ "config": v }))

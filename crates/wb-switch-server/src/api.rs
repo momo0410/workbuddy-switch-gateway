@@ -703,6 +703,11 @@ async fn api_gateway_config() -> Response {
 
 /// POST /api/gateway/config —— 保存网关配置。
 async fn api_save_gateway_config(Json(body): Json<Value>) -> Response {
+    // 前端 camelCase → 配置 snake_case
+    let mut body = body;
+    if let Some(u) = body.get("pinnedUid").cloned() {
+        body["pinned_uid"] = u;
+    }
     match wb_switch_core::modules::gateway::save_gateway_config(&body) {
         Ok(v) => json_ok(json!({ "config": v })),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),

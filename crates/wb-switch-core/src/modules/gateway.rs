@@ -129,6 +129,11 @@ pub fn default_gateway_config() -> Value {
         "listen": ":7863",
         "api_key": "",
         "auto_start": false,
+        // 网关工作模式：
+        //   "balance" —— 负载均衡：账号池按三因子加权随机选号（默认）
+        //   "pinned"  —— 指定账号：只使用 pinned_uid 对应的那一个账号
+        "mode": "balance",
+        "pinned_uid": null,
         "last_status": null,
         "last_error": null,
     })
@@ -351,6 +356,56 @@ pub async fn run_auto_sync_loop(interval_secs: u64) {
     }
 }
 
+/// 网关工作模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatewayMode {
+    /// 负载均衡：账号池加权随机选号，自动避开冷却/熔断的账号。
+    Balance,
+    /// 指定账号：只使用 pinned_uid 对应的账号。
+    Pinned,
+}
+
+impl GatewayMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GatewayMode::Balance => "balance",
+            GatewayMode::Pinned => "pinned",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "pinned" | "pin" | "single" => GatewayMode::Pinned,
+            _ => GatewayMode::Balance,
+        }
+    }
+}
+
+/// 读取当前网关模式。
+pub fn gateway_mode() -> GatewayMode {
+    GatewayMode::from_str(&load_gateway_config()
+        .get("mode").and_then(Value::as_str).unwrap_or("balance"))
+}
+
+/// 读取「指定账号」模式锁定的 uid。
+pub fn pinned_uid() -> Option<String> {
+    let cfg = load_gateway_config();
+    // 注意：必须先把配置绑定到变量，否则临时值在语句结束即被释放（E0716）
+    let s = cfg.get("pinned_uid")?.as_str()?.trim();
+    if s.is_empty() { None } else { Some(s.to_string()) }
+}
+
+/// 当前实际参与网关的账号 uid 集合。
+///
+/// 负载均衡：全部账号；指定账号：仅 pinned_uid。
+/// 网关依据 `auths/` 目录里的凭证文件建立账号池，
+/// 因此「只导出目标账号」即可实现指定账号，同时保留熔断/冷却/粘性等能力。
+fn active_uids() -> Option<Vec<String>> {
+    match gateway_mode() {
+        GatewayMode::Balance => None, // None = 不过滤，全部导出
+        GatewayMode::Pinned => Some(pinned_uid().into_iter().collect()),
+    }
+}
+
 /// 账号库 -> 网关凭证目录。返回 (账号数, 有变化的 uid 列表)。
 pub fn export_accounts_to_gateway() -> Result<(usize, Vec<String>), String> {
     let dir = gateway_auth_dir();
@@ -359,7 +414,16 @@ pub fn export_accounts_to_gateway() -> Result<(usize, Vec<String>), String> {
     let mut changed = Vec::new();
     let mut written = 0usize;
 
+    // 按模式过滤：指定账号模式只导出锁定的那一个账号
+    let only: Option<Vec<String>> = active_uids();
+
     for acc in &accounts {
+        if let Some(allowed) = &only {
+            let uid = account::get_str(acc, "uid").unwrap_or_default();
+            if !allowed.iter().any(|u| u == &uid) {
+                continue;
+            }
+        }
         let Some((file, text)) = build_auth_doc(acc) else { continue };
         let path = dir.join(&file);
         // 内容一致则不写盘，避免无意义的文件时间戳变动
@@ -849,6 +913,22 @@ pub async fn gateway_status() -> Value {
         "port": port,
         "exePath": exe_path,
         "exeFound": exe_found,
+        "exeSource": gateway_source(),
+        "mode": gateway_mode().as_str(),
+        "pinnedUid": pinned_uid(),
+        // 供前端下拉选择「指定账号」
+        "accounts": account::load_accounts()
+            .iter()
+            .filter_map(|a| {
+                let uid = account::get_str(a, "uid")?;
+                Some(json!({
+                    "uid": uid,
+                    "nickname": account::get_str(a, "nickname").unwrap_or_default(),
+                    "expiresAt": a.get("expiresAt").and_then(Value::as_i64).unwrap_or(0),
+                    "needsRelogin": a.get("needs_relogin").and_then(Value::as_bool).unwrap_or(false),
+                }))
+            })
+            .collect::<Vec<Value>>(),
         "exeSource": gateway_source(),
         "portAvailable": port_free(port),
         "authDir": gateway_auth_dir().to_string_lossy(),
