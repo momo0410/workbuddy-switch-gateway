@@ -52,3 +52,7 @@ crates/wb-switch-core/embedded/
 # 单文件构建产物（不入库，改由 CI/本地构建生成）
 dist-single/
 _rel/
+
+# CI 工作流：需 workflow scope 才能推送；本仓库暂由本地构建
+# 原上游工作流依赖其私有密钥，已备份至 _workflows_backup/
+.github/workflows/
