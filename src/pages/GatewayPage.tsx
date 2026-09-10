@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -143,13 +143,74 @@ export default function GatewayPage() {
   const [portCheck, setPortCheck] = useState<GatewayPortCheck | null>(null);
   const [checkingPort, setCheckingPort] = useState(false);
 
+  /**
+   * 端口 / API Key 是否存在「已编辑但未保存」的内容。
+   *
+   * 5 秒轮询会用后端配置刷新界面；若无条件覆盖，用户正在输入的内容会被
+   * 中途改回去。因此在用户编辑期间暂停对这两个文本字段的覆盖。
+   * 模式与自动启动是开关型操作，改为即时保存，不受此影响。
+   */
+  const dirtyRef = useRef(false);
+
   const applyConfig = useCallback((cfg: GatewayConfig) => {
-    setPort(cfg.port || portOf(cfg.listen) || 7863);
-    setApiKey(cfg.api_key || "");
+    if (!dirtyRef.current) {
+      setPort(cfg.port || portOf(cfg.listen) || 7863);
+      setApiKey(cfg.api_key || "");
+    }
     setAutoStart(Boolean(cfg.auto_start));
     setMode(cfg.mode === "pinned" ? "pinned" : "balance");
     setPinnedUid(cfg.pinned_uid ?? "");
   }, []);
+
+  /**
+   * 切换工作模式并立即持久化。
+   *
+   * 模式属于开关型设置：若只改本地状态而等用户点「保存」，5 秒后的轮询会用
+   * 后端旧值把它覆盖回负载均衡（用户看到的「点了一会又跳回去」）。
+   * 因此这里乐观更新 + 立即保存，失败再回滚。
+   */
+  async function changeMode(next: GatewayMode) {
+    const uid =
+      next === "pinned"
+        ? pinnedUid || status?.accounts?.[0]?.uid || ""
+        : null;
+    setMode(next);
+    setPinnedUid(uid ?? "");
+    try {
+      await api.saveGatewayConfig({ mode: next, pinned_uid: uid });
+      await refresh();
+    } catch (e) {
+      toast.error(api.asError(e));
+      await refresh(); // 回滚为后端真实状态
+    }
+  }
+
+  /**
+   * 切换「随 App 启动」。同样是开关型设置，立即持久化，
+   * 否则 5 秒轮询会用后端旧值拨回开关。
+   */
+  async function changeAutoStart(next: boolean) {
+    setAutoStart(next);
+    try {
+      await api.saveGatewayConfig({ auto_start: next });
+      await refresh();
+    } catch (e) {
+      toast.error(api.asError(e));
+      await refresh();
+    }
+  }
+
+  /** 指定账号模式下切换目标账号，同样立即持久化。 */
+  async function changePinnedUid(uid: string) {
+    setPinnedUid(uid);
+    try {
+      await api.saveGatewayConfig({ mode: "pinned", pinned_uid: uid });
+      await refresh();
+    } catch (e) {
+      toast.error(api.asError(e));
+      await refresh();
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -416,7 +477,7 @@ export default function GatewayPage() {
               variant={mode === "balance" ? "default" : "outline"}
               size="sm"
               className="h-8 gap-1.5 px-2.5 text-xs"
-              onClick={() => setMode("balance")}
+              onClick={() => void changeMode("balance")}
             >
               <Shuffle className="size-3.5" />
               负载均衡
@@ -425,13 +486,7 @@ export default function GatewayPage() {
               variant={mode === "pinned" ? "default" : "outline"}
               size="sm"
               className="h-8 gap-1.5 px-2.5 text-xs"
-              onClick={() => {
-                setMode("pinned");
-                if (!pinnedUid) {
-                  const first = status?.accounts?.[0];
-                  if (first) setPinnedUid(first.uid);
-                }
-              }}
+              onClick={() => void changeMode("pinned")}
             >
               <UserRound className="size-3.5" />
               指定账号
@@ -455,7 +510,7 @@ export default function GatewayPage() {
             <select
               id="gw-account"
               value={pinnedUid}
-              onChange={(e) => setPinnedUid(e.target.value)}
+              onChange={(e) => void changePinnedUid(e.target.value)}
               className="h-8 w-44 shrink-0 rounded-md border border-input bg-background px-2 text-xs"
             >
               <option value="">（未选择）</option>
@@ -503,7 +558,10 @@ export default function GatewayPage() {
               min={1}
               max={65535}
               value={Number.isFinite(port) ? port : ""}
-              onChange={(e) => setPort(Number(e.target.value))}
+              onChange={(e) => {
+                dirtyRef.current = true;
+                setPort(Number(e.target.value));
+              }}
               placeholder="7863"
               className="h-8 w-24 font-mono text-xs"
               aria-invalid={portState.tone === "bad"}
@@ -545,7 +603,10 @@ export default function GatewayPage() {
           <Input
             id="gw-key"
             value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
+            onChange={(e) => {
+              dirtyRef.current = true;
+              setApiKey(e.target.value);
+            }}
             placeholder="sk-..."
             className="h-8 w-44 shrink-0 font-mono text-xs"
           />
@@ -556,20 +617,17 @@ export default function GatewayPage() {
             <div className="mt-0.5 text-[11px] text-muted-foreground">打开本应用时自动启动网关</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Switch checked={autoStart} onCheckedChange={setAutoStart} />
+            <Switch checked={autoStart} onCheckedChange={(v) => void changeAutoStart(v)} />
             <Button
               variant="outline"
               size="sm"
               className="h-7 gap-1.5 text-xs"
               onClick={() =>
+                // 保存按钮只管文本字段（端口 / API Key）：
+                // 模式与自动启动是开关型，已在点击时即时保存，不在这里重复提交。
                 void run("save", async () => {
-                  await api.saveGatewayConfig({
-                    port,
-                    api_key: apiKey,
-                    auto_start: autoStart,
-                    mode,
-                    pinned_uid: mode === "pinned" ? pinnedUid : null,
-                  });
+                  dirtyRef.current = false;
+                  await api.saveGatewayConfig({ port, api_key: apiKey });
                   toast.success("配置已保存");
                 })
               }
