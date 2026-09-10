@@ -46,7 +46,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "RWQfdydjW1o/DcKfHSExpYSfNg2FdUExkWc63W2VWS+8WOtvao7RKwrq",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIxN0MwRTJCNDMyMUQ4NDEKUldSQjJDRkRLdzU4SVY1d2d5azNhcjlKODZOVGJhTDZLK2Z3K3ZTcG5RVmlOZ29UMWNkYk5uQ3AK",
       "endpoints": [
         "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest.json",
         "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest-{{target}}-{{arch}}.json"
