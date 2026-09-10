@@ -356,6 +356,24 @@ pub async fn run_auto_sync_loop(interval_secs: u64) {
     }
 }
 
+/// 从候选 uid 中筛出「应当导出到网关」的集合。
+///
+/// `only` 为 None 表示不筛选（负载均衡，全部导出）；
+/// 为 Some(set) 表示只保留 set 内的（指定账号）。
+///
+/// 抽成纯函数是为了让「导出」与「清理」共用同一判定 —— 二者一旦分叉，
+/// 切换模式时就会出现残留凭证（网关仍把旧账号加载进池，表现为切换无效）。
+fn select_export_uids(candidates: &[String], only: &Option<Vec<String>>) -> Vec<String> {
+    match only {
+        None => candidates.to_vec(),
+        Some(allowed) => candidates
+            .iter()
+            .filter(|u| allowed.iter().any(|a| a == *u))
+            .cloned()
+            .collect(),
+    }
+}
+
 /// 网关工作模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayMode {
@@ -417,12 +435,17 @@ pub fn export_accounts_to_gateway() -> Result<(usize, Vec<String>), String> {
     // 按模式过滤：指定账号模式只导出锁定的那一个账号
     let only: Option<Vec<String>> = active_uids();
 
+    // 「是否导出某账号」只在这里定义一次，导出与清理共用。
+    // 分开写会导致切换模式时判定不一致（曾被此坑到：清理用账号库全集，
+    // 从负载均衡切到指定账号后其余凭证残留，网关仍把它们加载进池）。
+    let should_export = |acc: &Value| -> bool {
+        let uid = account::get_str(acc, "uid").unwrap_or_default();
+        !select_export_uids(&[uid], &only).is_empty()
+    };
+
     for acc in &accounts {
-        if let Some(allowed) = &only {
-            let uid = account::get_str(acc, "uid").unwrap_or_default();
-            if !allowed.iter().any(|u| u == &uid) {
-                continue;
-            }
+        if !should_export(acc) {
+            continue;
         }
         let Some((file, text)) = build_auth_doc(acc) else { continue };
         let path = dir.join(&file);
@@ -440,10 +463,13 @@ pub fn export_accounts_to_gateway() -> Result<(usize, Vec<String>), String> {
         written += 1;
     }
 
-    // 清理账号库中已删除账号对应的凭证，避免网关注销账号仍被调度
-    let live: Vec<String> = accounts
+    // 清理不再需要的凭证：账号库中已删除的，以及因模式切换而不再导出的。
+    let all_uids: Vec<String> = accounts
         .iter()
         .filter_map(|a| account::get_str(a, "uid"))
+        .collect();
+    let live: Vec<String> = select_export_uids(&all_uids, &only)
+        .iter()
         .map(|u| format!("workbuddy-{u}.json"))
         .collect();
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -749,7 +775,10 @@ pub async fn start_gateway(cfg: &Value) -> Result<Value, String> {
     // 先把账号库导出为网关凭证，保证启动即能加载到账号
     let (count, _) = export_accounts_to_gateway()?;
     if count == 0 {
-        return Err("账号库为空，请先添加账号再启动网关".to_string());
+        return Err(match gateway_mode() {
+            GatewayMode::Pinned => "「指定账号」模式尚未选择账号，请在网关页面选择后启动".to_string(),
+            GatewayMode::Balance => "账号库为空，请先添加账号再启动网关".to_string(),
+        });
     }
 
     // 统一端口来源：优先显式 port 字段，其次解析 listen
@@ -1025,6 +1054,28 @@ mod tests {
         let out = super::overlay(base, &json!({"b": 9}));
         assert_eq!(out["a"], 1);
         assert_eq!(out["b"], 9);
+    }
+
+    // 回归保护：切换「负载均衡 ↔ 指定账号」时，导出与清理必须用同一判定。
+    // 曾经的缺陷是清理用账号库全集，导致切到指定账号后其余凭证残留，
+    // 网关仍把它们加载进池 —— 表现为「模式切换没生效」。
+    #[test]
+    fn select_export_uids_filters_by_mode() {
+        let all = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        // 负载均衡：不过滤
+        assert_eq!(select_export_uids(&all, &None), all);
+
+        // 指定账号：只保留选中的
+        let only = Some(vec!["b".to_string()]);
+        assert_eq!(select_export_uids(&all, &only), vec!["b".to_string()]);
+
+        // 选中的不在账号库里（例如账号已删除）：结果为空 → 清理掉全部残留
+        let missing = Some(vec!["zzz".to_string()]);
+        assert!(select_export_uids(&all, &missing).is_empty());
+
+        // 空选择：同样应清空（调用方据此报「尚未选择账号」）
+        assert!(select_export_uids(&all, &Some(vec![])).is_empty());
     }
 
     // 账号指纹：内容变化必须导致指纹变化，否则自动同步会漏掉新账号。
