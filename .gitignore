@@ -56,3 +56,8 @@ _rel/
 # CI 工作流：需 workflow scope 才能推送；本仓库暂由本地构建
 # 原上游工作流依赖其私有密钥，已备份至 _workflows_backup/
 .github/workflows/
+
+# 更新签名私钥（绝不入库；丢失后无法签名新版本）
+*.key
+*.key.pub
+!.gitignore
