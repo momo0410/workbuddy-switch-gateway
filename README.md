@@ -579,21 +579,35 @@ patches/intl-support.patch        （基于上游 cfb1713 生成）
 - `RunCheckinNow` 改用 `UserResourceDetail`，一次请求同时取回余额与最近到期日
 - 新增 `DefaultCreditRefreshInterval = 15m` 与 `RunCreditRefreshNow` 手动入口
 
-### 3. `credit` 元数据的解析与写回（`internal/auth/auth.go`）
+### 3. 到期日的解析（`internal/upstream/client.go`）
+
+分层选号的**数据来源**：`billing get-user-resource` 的返回里新增到期字段解析。
+
+- `resourcePackage` 结构抽出（原为匿名内联），新增 `remain()` 与 `expiryUnix()`
+- `parseExpiryUnix()`：到期字段在不同区域 / 套餐上出现过**数字与字符串两种形态**，
+  因此声明为 `any` 并逐一兼容 —— epoch 秒、epoch 毫秒、
+  `2006-01-02 15:04:05`、RFC3339、纯日期（按当日 23:59:59 计）
+- 到期字段优先取 `DeductionEndTime`（抵扣截止 = 额度真正失效时刻），
+  回退 `ExpiredTime` / `CycleEndTime`
+- `UserResourceDetail()`：一次请求同时返回余额与最近到期时刻，**不额外打上游**；
+  `UserResource()` 保留为薄封装，返回值不变
+- **只有仍有剩余的套餐才计入到期压力**：已用尽的套餐到期日再早也无意义
+
+### 4. `credit` 元数据的解析与写回（`internal/auth/auth.go`）
 
 - `Auth.SoonestExpireAt` 字段；`creditBlock` 解析凭证里的 `credit` 块
   （嵌套形与扁平形都支持）
 - `normalizeEpoch()`：上游混用秒 / 毫秒，按量级统一成秒
 - `SaveAtomic()` 保留 `credit` 块 —— 否则 token 刷新重写凭证时会丢掉到期信息
 
-### 4. 国际版区域路由（`internal/upstream/`）
+### 5. 国际版区域路由（`internal/upstream/`）
 
 - `client.go`：新增 `IsIntl()`（按 `auth.Domain` 后缀）与 `BaseIntl` 字段；
   `chatBase()` / `billingBase()` 改为**按账号区域返回域名**
 - `headers.go`：`Origin` / `Referer` 跟随账号区域
   （国服 `codebuddy.cn`、国际版 `workbuddy.ai`）
 
-### 5. 国际版模型表与签到范围（`internal/server/handler.go`、`cmd/server/config.go`）
+### 6. 国际版模型表与签到范围（`internal/server/handler.go`、`cmd/server/config.go`）
 
 - 新增国际版静态模型表，`/v1/models` 返回两区域并集
   （国际版的模型列表接口返回 500，无法动态拉取）
