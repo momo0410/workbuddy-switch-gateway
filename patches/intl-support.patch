@@ -1,0 +1,230 @@
+warning: in the working copy of 'internal/server/handler.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'internal/server/handler_test.go', LF will be replaced by CRLF the next time Git touches it
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 2f604fe..2f493ec 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -133,6 +133,58 @@ var staticModels = []map[string]any{
+ 	{"id": "deepseek-v4-flash", "object": "model", "created": 1753600000, "owned_by": "workbuddy", "context_length": 131072},
+ }
+ 
++// staticModelsIntl 国际版静态模型表。
++//
++// 国际版的 /console/enterprises/personal/models 在当前版本返回 500
++// （openresty 错误页），无法动态拉取，因此这里内置一份。
++// 取自国际版客户端本地缓存 acc-product-config-v3.json 的 agents[0].models。
++//
++// 注意与国服的差异（这也是客户端选模型时最易踩的坑）：
++//
++//	国服   deepseek-v4-flash   / glm-5.2 / kimi-k2.7 / minimax-m3
++//	国际版 deepseek-v4.1-flash / glm-5.3 / kimi-k3   / gpt-5.6-* / gemini-3.5-flash
++var staticModelsIntl = []map[string]any{
++	{"id": "default-model", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 200000},
++	{"id": "fast-model", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 176000},
++	{"id": "balanced-model", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 176000},
++	{"id": "primary-model", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 176000},
++	{"id": "deep-model", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 176000},
++	{"id": "hy4-preview", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "hy3", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "deepseek-v4.1-flash", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-6-astra", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.6-sol", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.6-terra", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.6-luna", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.5", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.4", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gpt-5.3-codex", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "gemini-3.5-flash", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "glm-5.3", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "glm-5.2", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "kimi-k3", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++	{"id": "kimi-k2.6", "object": "model", "created": 1753600000, "owned_by": "workbuddy-intl", "context_length": 131072},
++}
++
++// staticModelsAll 合并两个区域的模型（按 id 去重，国服优先）。
++//
++// /v1/models 没有账号上下文，因此返回并集：客户端据此得知全部可用名称。
++// 具体某个名称能否用，取决于实际选中的账号属于哪个区域 ——
++// 不匹配时上游会返回 code=11102 model service info not found，提示清晰。
++var staticModelsAll = func() []map[string]any {
++	seen := map[string]bool{}
++	out := make([]map[string]any, 0, len(staticModels)+len(staticModelsIntl))
++	for _, m := range append(append([]map[string]any{}, staticModels...), staticModelsIntl...) {
++		id, _ := m["id"].(string)
++		if id == "" || seen[id] {
++			continue
++		}
++		seen[id] = true
++		out = append(out, m)
++	}
++	return out
++}()
++
+ // dynamicModelsCache 动态模型缓存。
+ var dynamicModelsCache struct {
+ 	sync.RWMutex
+@@ -157,7 +209,8 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
+ // modelList 动态获取模型列表并包装成 OpenAI 格式（含 context_length）。
+ func (h *Handler) modelList() []map[string]any {
+ 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
+-		out := make([]map[string]any, 0, len(infos))
++		out := make([]map[string]any, 0, len(infos)+len(staticModelsIntl))
++		seen := make(map[string]bool, len(infos)+len(staticModelsIntl))
+ 		for _, mi := range infos {
+ 			entry := map[string]any{
+ 				"id":                mi.ID,
+@@ -170,11 +223,21 @@ func (h *Handler) modelList() []map[string]any {
+ 			if mi.ContextWindow == 0 {
+ 				entry["context_length"] = 131072 // 兜底
+ 			}
++			seen[mi.ID] = true
+ 			out = append(out, entry)
+ 		}
++		// 动态列表来自实际取到账号的那个区域（通常是国服）；国际版的模型列表
++		// 接口本身不可用（500），只能靠静态表补齐。不补的话，混合账号池下
++		// 客户端看不到国际版模型名，也就无法主动选用。
++		for _, m := range staticModelsIntl {
++			if id, _ := m["id"].(string); id != "" && !seen[id] {
++				seen[id] = true
++				out = append(out, m)
++			}
++		}
+ 		return out
+ 	}
+-	return staticModels
++	return staticModelsAll
+ }
+ 
+ // fetchDynamicModels 从池中任一健康账号拉模型列表（含 contextWindow/maxTokens），缓存 1h。
+diff --git a/internal/server/handler_test.go b/internal/server/handler_test.go
+index f6dce6a..87ea152 100644
+--- a/internal/server/handler_test.go
++++ b/internal/server/handler_test.go
+@@ -486,16 +486,27 @@ func TestModelsDynamic(t *testing.T) {
+ 	var resp map[string]any
+ 	json.Unmarshal(rec.Body.Bytes(), &resp)
+ 	data := resp["data"].([]any)
+-	if len(data) != 3 {
+-		t.Fatalf("want 3 dynamic models, got %d: %v", len(data), data)
++	// 动态拉取到的模型排在最前（本次 3 个），其后是国际版静态补齐表：
++	// 国际版没有可用的模型列表接口，不静态补齐的话混合账号池下客户端看不到其模型名。
++	if len(data) < 3 {
++		t.Fatalf("want at least 3 dynamic models, got %d: %v", len(data), data)
+ 	}
+ 	ids := map[string]bool{}
+-	for _, m := range data {
+-		ids[m.(map[string]any)["id"].(string)] = true
++	for i, m := range data {
++		id := m.(map[string]any)["id"].(string)
++		ids[id] = true
++		// 前三项必须是动态结果，保证动态优先级不被静态表挤掉
++		if i < 3 && id != "dyn-model-a" && id != "dyn-model-b" && id != "glm-9.9" {
++			t.Errorf("第 %d 项应为动态模型，实际 %s", i, id)
++		}
+ 	}
+ 	if !ids["dyn-model-a"] || !ids["glm-9.9"] {
+ 		t.Errorf("dynamic ids missing: %v", ids)
+ 	}
++	// 国际版静态模型必须并入，否则跨区域无法选用
++	if !ids["gpt-5.6-sol"] || !ids["deepseek-v4.1-flash"] {
++		t.Errorf("国际版静态模型未并入: %v", ids)
++	}
+ 
+ 	// 断言字段映射：maxInputTokens → context_length，maxOutputTokens → max_output_tokens
+ 	for _, m := range data {
+diff --git a/internal/upstream/client.go b/internal/upstream/client.go
+index de60464..117ee13 100644
+--- a/internal/upstream/client.go
++++ b/internal/upstream/client.go
+@@ -132,6 +132,23 @@ type Client struct {
+ 
+ 	ChatBaseCN    string
+ 	BillingBaseCN string
++	// BaseIntl 国际版基址。与国服不同，国际版所有端点（chat / billing /
++	// 签到 / 旅行 / token 刷新）都在同一域名下，因此只需一个 base。
++	BaseIntl string
++}
++
++// isIntl 判断账号是否属于国际版。
++//
++// 依据 auth 文件里的 domain 字段：
++//   *.workbuddy.cn / *.codebuddy.cn -> 国服
++//   *.workbuddy.ai / *.codebuddy.ai -> 国际版
++//
++// domain 缺失时按国服处理：历史上只存在国服账号，保持向后兼容。
++func isIntl(a *auth.Auth) bool {
++	if a == nil {
++		return false
++	}
++	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(a.Domain)), ".ai")
+ }
+ 
+ // New 生产默认值。配置连接池减少 TLS 握手。
+@@ -148,7 +165,8 @@ func New() *Client {
+ 		ChatHTTP:             &http.Client{Timeout: 0, Transport: tr}, // 无总时长；首字节由 ResponseHeaderTimeout 管
+ 		SanitizeFingerprints: true,
+ 		ChatBaseCN:           "https://copilot.tencent.com",
+-		BillingBaseCN:        "https://www.codebuddy.cn",
++			BillingBaseCN:        "https://www.codebuddy.cn",
++			BaseIntl:             "https://www.workbuddy.ai",
+ 	}
+ }
+ 
+@@ -160,7 +178,14 @@ func (c *Client) chatHTTP() *http.Client {
+ 	return c.HTTP
+ }
+ 
++// chatBase 返回该账号的 chat 基址（按区域路由）。
+ func (c *Client) chatBase(a *auth.Auth) string {
++	if isIntl(a) {
++		if c.BaseIntl != "" {
++			return c.BaseIntl
++		}
++		return "https://www.workbuddy.ai"
++	}
+ 	return c.ChatBaseCN
+ }
+ 
+@@ -183,7 +208,16 @@ func (c *Client) effortsSnapshot() map[string][]string {
+ 	return cp
+ }
+ 
++// billingBase 返回该账号的 billing 基址（按区域路由）。
++//
++// 国服 billing 与 chat 分属不同域名；国际版两者同域。
+ func (c *Client) billingBase(a *auth.Auth) string {
++	if isIntl(a) {
++		if c.BaseIntl != "" {
++			return c.BaseIntl
++		}
++		return "https://www.workbuddy.ai"
++	}
+ 	return c.BillingBaseCN
+ }
+ 
+diff --git a/internal/upstream/headers.go b/internal/upstream/headers.go
+index 37549df..ac442c1 100644
+--- a/internal/upstream/headers.go
++++ b/internal/upstream/headers.go
+@@ -9,11 +9,19 @@ import (
+ )
+ 
+ const (
+-	clientUA        = "CLI/2.63.2 CodeBuddy/2.63.2"
+-	originRefererCN = "https://www.codebuddy.cn"
++	clientUA          = "CLI/2.63.2 CodeBuddy/2.63.2"
++	originRefererCN   = "https://www.codebuddy.cn"
++	originRefererIntl = "https://www.workbuddy.ai"
+ )
+ 
++// originRefererFor 返回该账号所属区域对应的 Origin/Referer。
++//
++// 上游按 Origin 判定来源区域，跨区域发送会被拒或落到错误的服务，
++// 因此必须跟随账号区域，不能恒为国服。
+ func originRefererFor(a *auth.Auth) string {
++	if isIntl(a) {
++		return originRefererIntl
++	}
+ 	return originRefererCN
+ }
+ 

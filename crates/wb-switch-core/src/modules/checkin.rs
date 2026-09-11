@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::modules::account::{account_display_name, build_auth_headers, load_accounts};
 use crate::modules::config::{
     add_checkin_log, http_request, load_checkin_config, load_checkin_logs, now_ms, RunFlagGuard,
-    CHECKIN_API_PREFIX, WORKBUDDY_API_ENDPOINT,
+    api_endpoint_for, CHECKIN_API_PREFIX,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
@@ -89,7 +89,8 @@ fn is_unauthorized(resp: &Value) -> bool {
 
 /// 发签到相关请求；遇到未授权且存在 refresh token 时刷新一次并重试。
 async fn checkin_request(path: &str, account: &Value) -> Value {
-    let url = format!("{WORKBUDDY_API_ENDPOINT}{path}");
+    // 端点随账号区域走（国服 codebuddy.cn / 国际版 workbuddy.ai）
+    let url = format!("{}{path}", api_endpoint_for(account));
     let headers = build_auth_headers(account);
     let mut resp = http_request(&url, "POST", Some(json!({})), Some(&headers)).await;
     if is_unauthorized(&resp)

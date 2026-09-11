@@ -113,6 +113,7 @@
 | **单文件分发** | 网关二进制 gzip 压缩后编进主程序，运行时按内容指纹释放到缓存，**只需分发一个 exe** |
 | **单实例保护** | 重复启动不会开出第二个窗口，而是聚焦（必要时从托盘唤回）已有实例 |
 | **官方身份校验** | 用网关 `/healthz` 的 `service` 标识确认应答者身份，避免「假启动成功」 |
+| **双区域支持** | 国服（codebuddy.cn）与国际版（workbuddy.ai）账号可共存于同一账号库，按账号 `domain` 自动路由 |
 
 关于**单实例保护**的必要性：应用启动后会运行 8 个后台任务（签到、保活、自动轮换、
 旅行派发/领取、网关同步等），它们都会写同一份账号库。若允许多开，多个实例会并发
@@ -127,6 +128,29 @@
 - **自动更新**：基于 Tauri updater，更新包经签名校验
 
 ---
+
+## 服务区域
+
+支持**国服**与**国际版**两个区域，两边的账号可同时存在于同一账号库。
+
+| | 国服 | 国际版 |
+|---|---|---|
+| 网页 / API | `www.codebuddy.cn` | `www.workbuddy.ai` |
+| 聊天端点 | `copilot.tencent.com`（与 API **分域**） | `www.workbuddy.ai`（**同域**） |
+| 凭证 `domain` | `www.workbuddy.cn` | `www.workbuddy.ai` |
+| 本机认证文件 | `workbuddy-desktop.info` | `workbuddy-desktop-ai.info` |
+| 代表模型 | `deepseek-v4-flash`、`glm-5.2`、`kimi-k2.7` | `gpt-5.6-*`、`gemini-3.5-flash`、`deepseek-v4.1-flash` |
+
+**区域判定**：按账号库 `domain` 字段后缀（`.cn` → 国服，`.ai` → 国际版）。
+网关与客户端的所有请求都据此选择域名，无需手工切换配置。
+
+**一键导入**：「账号管理」页的「从本机导入」会**同时探测两个区域的认证文件**，
+把本机已登录的账号全部并入账号库，提示中会标明各自区域。
+
+> **模型名不通用**：两区域模型名不同（国服 `deepseek-v4-flash` / 国际版 `deepseek-v4.1-flash`）。
+> `/v1/models` 返回两区域模型的并集，但**某个名称能否用取决于实际选中的账号属于哪个区域**；
+> 不匹配时上游返回 `11102 model service info not found`，网关会自动换号重试。
+> 需要精确控制时，请在网关页选择「**指定账号**」模式并锁定对应区域的账号。
 
 ## 架构设计
 
@@ -201,7 +225,12 @@
 
 ```powershell
 # 1) 构建网关（Go），产物直接作为内嵌资源
-cd path\to\workbuddy2api
+git clone --depth 1 https://github.com/Sliverkiss/workbuddy2api.git
+cd workbuddy2api
+
+#    应用「国际版支持」补丁（需要国际版时才要；只做国服可跳过）
+git apply ..\workbuddy-switch-gateway\patches\intl-support.patch
+
 go build -trimpath -ldflags "-s -w" `
   -o ..\workbuddy-switch-gateway\crates\wb-switch-core\embedded\gateway.exe `
   .\cmd\server
@@ -315,6 +344,16 @@ curl $OPENAI_BASE_URL/chat/completions \
 > 没有。窗口被隐藏到系统托盘，后台任务与网关仍在运行。右键托盘图标可重新打开
 > 主界面或彻底退出。
 
+**Q：国服与国际版账号能混用吗？**
+> 可以放在同一账号库，按 `domain` 自动路由。但**模型名不通用**：混合账号池下
+> 用某个区域的模型名请求，可能被路由到另一区域账号而返回 `11102`，网关会自动
+> 换号重试（表现为偶发变慢）。需要稳定时，用「指定账号」模式锁定对应区域的账号。
+
+**Q：国际版的模型列表为什么是固定的？**
+> 上游 `/console/enterprises/personal/models` 在国际版返回 500，无法动态拉取，
+> 因此国际版模型来自内置静态表（取自客户端本地配置 `acc-product-config-v3.json`）。
+> 上游新增模型时需要同步更新该表。
+
 **Q：能同时运行上游的 workbuddy-switch 吗？**
 > 可以。两者的应用标识与安装目录不同，互不冲突。
 
@@ -354,6 +393,27 @@ cd path/to/workbuddy2api && go test ./...
 ```
 
 ---
+
+## 对上游的改动
+
+本项目对 `workbuddy2api`（Go 网关）做了少量改动以支持国际版，以补丁形式维护：
+
+```
+patches/intl-support.patch
+```
+
+改动内容：
+
+- `internal/upstream/client.go`：新增 `isIntl()` 区域判定（按 `auth.Domain` 后缀）
+  与 `BaseIntl` 字段；`chatBase()` / `billingBase()` 改为**按账号区域返回域名**
+- `internal/upstream/headers.go`：`Origin` / `Referer` 跟随账号区域
+  （国服 `codebuddy.cn`、国际版 `workbuddy.ai`）
+- `internal/server/handler.go`：新增国际版静态模型表，`/v1/models` 返回两区域并集
+  （国际版的模型列表接口返回 500，无法动态拉取）
+
+补丁基于上游 `cfb1713` 生成，已验证可在更新的上游提交上干净应用并编译通过。
+
+> 若你只使用国服，可跳过该补丁，功能与上游一致。
 
 ## 上游来源与许可证
 

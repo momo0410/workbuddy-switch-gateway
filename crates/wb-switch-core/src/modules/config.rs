@@ -12,7 +12,63 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // 常量
 // ---------------------------------------------------------------------------
 
+/// 国服 API 基址。
 pub const WORKBUDDY_API_ENDPOINT: &str = "https://www.codebuddy.cn";
+
+/// 国际版基址。
+///
+/// 与国服不同，国际版的 Web 与 API（chat / billing / 签到 / 旅行 / 刷新）
+/// 全部在同一域名下，因此只需一个常量。
+pub const WORKBUDDY_API_ENDPOINT_INTL: &str = "https://www.workbuddy.ai";
+
+/// 服务区域。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    /// 国服（codebuddy.cn / workbuddy.cn）
+    Cn,
+    /// 国际版（workbuddy.ai / codebuddy.ai）
+    Intl,
+}
+
+impl Region {
+    pub const ALL: [Region; 2] = [Region::Cn, Region::Intl];
+
+    /// 由账号的 domain 字段判断区域；后缀 .ai 视为国际版。
+    /// domain 缺失时按国服处理（历史上只存在国服账号）。
+    pub fn from_domain(domain: &str) -> Region {
+        if domain.trim().to_ascii_lowercase().ends_with(".ai") {
+            Region::Intl
+        } else {
+            Region::Cn
+        }
+    }
+
+    /// 由账号记录判断区域。
+    pub fn of(account: &serde_json::Value) -> Region {
+        Region::from_domain(account.get("domain").and_then(|v| v.as_str()).unwrap_or(""))
+    }
+
+    /// 该区域的 API 基址。
+    pub fn api_endpoint(self) -> &'static str {
+        match self {
+            Region::Cn => WORKBUDDY_API_ENDPOINT,
+            Region::Intl => WORKBUDDY_API_ENDPOINT_INTL,
+        }
+    }
+
+    /// 界面展示用的区域名。
+    pub fn label(self) -> &'static str {
+        match self {
+            Region::Cn => "国服",
+            Region::Intl => "国际版",
+        }
+    }
+}
+
+/// 按账号区域返回 API 基址（供各模块拼接端点）。
+pub fn api_endpoint_for(account: &serde_json::Value) -> &'static str {
+    Region::of(account).api_endpoint()
+}
 pub const WORKBUDDY_API_PREFIX: &str = "/v2/plugin";
 pub const WORKBUDDY_PLATFORM: &str = "workbuddy";
 

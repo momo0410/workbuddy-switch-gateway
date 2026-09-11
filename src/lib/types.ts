@@ -2,6 +2,10 @@
 
 export interface AccountMeta {
   id: string;
+  /** 服务区域展示名（"国服" / "国际版"），由 domain 后缀推导。 */
+  region?: string;
+  /** 区域键（"cn" / "intl"），便于样式与筛选。 */
+  regionKey?: "cn" | "intl";
   uid: string | null;
   email: string | null;
   nickname: string | null;

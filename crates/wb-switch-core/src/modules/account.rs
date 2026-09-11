@@ -71,7 +71,14 @@ pub fn account_display_name(acc: &Value) -> String {
 
 /// 账号的展示元数据（不泄露 token）。对照 server.py `account_meta`。
 pub fn account_meta(acc: &Value) -> Value {
+    // 区域由 domain 后缀推导（国服 .cn / 国际版 .ai），供界面区分展示。
+    let region = crate::modules::config::Region::of(acc);
     json!({
+        "region": region.label(),
+        "regionKey": match region {
+            crate::modules::config::Region::Cn => "cn",
+            crate::modules::config::Region::Intl => "intl",
+        },
         "id": acc.get("id"),
         "uid": acc.get("uid"),
         "email": acc.get("email"),
@@ -384,6 +391,49 @@ pub fn import_local() -> Result<Value, String> {
         .ok_or("未读取到本地 WorkBuddy 登录信息")?;
     let saved = save_collected_account(acc).map_err(|e| e.to_string())?;
     Ok(account_meta(&saved))
+}
+
+/// 从本机一键导入**所有可发现的区域**（国服 + 国际版）。
+///
+/// CodeBuddy / WorkBuddy 客户端把不同区域的登录态写在同目录的**不同文件**里：
+///   workbuddy-desktop.info       国服
+///   workbuddy-desktop-ai.info    国际版
+/// 因此这里逐个探测，把能读到的全部并入账号库。
+///
+/// 返回本次实际导入（或更新）的账号元数据列表；全部未发现时给出可操作的错误。
+pub fn import_local_all() -> Result<Vec<Value>, String> {
+    use crate::modules::config::Region;
+
+    let mut imported: Vec<Value> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    for region in Region::ALL {
+        match crate::modules::auth_file::import_from_auth_file_for(region) {
+            None => notes.push(format!("{}：未发现本机登录", region.label())),
+            Some(acc) => {
+                // 区域以认证文件为准：旧记录可能缺 domain，用文件名兜底标注。
+                let mut acc = acc;
+                if get_str(&acc, "domain").is_none() {
+                    acc["domain"] = json!(match region {
+                        Region::Cn => "www.workbuddy.cn",
+                        Region::Intl => "www.workbuddy.ai",
+                    });
+                }
+                match save_collected_account(acc) {
+                    Ok(saved) => imported.push(account_meta(&saved)),
+                    Err(e) => notes.push(format!("{}：保存失败 {e}", region.label())),
+                }
+            }
+        }
+    }
+
+    if imported.is_empty() {
+        return Err(format!(
+            "未发现本机登录信息（已尝试 国服 / 国际版）。{}",
+            notes.join("；")
+        ));
+    }
+    Ok(imported)
 }
 
 // 手动添加账号（token 方式）已随 UI 入口「手动添加」一并下线；

@@ -216,8 +216,13 @@ async fn api_delete(Json(body): Json<Value>) -> Response {
 }
 
 async fn api_import_local() -> Response {
-    match account::import_local() {
-        Ok(acc) => json_ok(json!({ "ok": true, "account": acc })),
+    match account::import_local_all() {
+        Ok(list) => json_ok(json!({
+            "ok": true,
+            "imported": list.len(),
+            "accounts": list,
+            "account": list.first().cloned(),
+        })),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
     }
 }

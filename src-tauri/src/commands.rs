@@ -162,10 +162,20 @@ pub async fn oauth_status(login_id: String) -> Value {
     oauth::oauth_poll(&login_id).await
 }
 
-/// POST /api/import-local —— 导入本机当前账号。
+/// POST /api/import-local —— 从本机一键导入账号。
+///
+/// 会同时探测国服（workbuddy-desktop.info）与国际版
+/// （workbuddy-desktop-ai.info）两个认证文件，把能读到的账号全部并入账号库。
+/// 返回 `accounts` 数组（含 region 字段）；`account` 保留为首个账号以兼容旧前端。
 #[tauri::command]
 pub fn import_local() -> Result<Value, String> {
-    account::import_local().map(|acc| json!({ "ok": true, "account": acc }))
+    let list = account::import_local_all()?;
+    Ok(json!({
+        "ok": true,
+        "imported": list.len(),
+        "accounts": list,
+        "account": list.first().cloned(),
+    }))
 }
 
 // ---------------------------------------------------------------------------

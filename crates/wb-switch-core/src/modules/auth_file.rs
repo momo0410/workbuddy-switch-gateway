@@ -11,16 +11,38 @@ use crate::modules::account::get_str;
 use crate::modules::config::{atomic_write, backup_dir, now_ms, utc_iso};
 
 /// WorkBuddy 官方认证文件路径（与 cockpit 一致）。
-pub fn auth_file_path() -> PathBuf {
+/// 认证文件所在目录（国服与国际版共用同一目录）。
+fn auth_dir() -> PathBuf {
     let home = crate::modules::config::home_dir();
     #[cfg(target_os = "macos")]
-    return home.join(
-        "Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
-    );
+    return home.join("Library/Application Support/CodeBuddyExtension/Data/Public/auth");
     #[cfg(target_os = "windows")]
-    return home.join("AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info");
+    return home.join("AppData/Local/CodeBuddyExtension/Data/Public/auth");
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    return home.join(".local/share/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info");
+    return home.join(".local/share/CodeBuddyExtension/Data/Public/auth");
+}
+
+/// 指定区域的认证文件名。
+///
+/// 国服与国际版由客户端写入**不同文件**（同一目录下）：
+///   workbuddy-desktop.info      国服
+///   workbuddy-desktop-ai.info   国际版
+pub fn auth_file_name_for(region: crate::modules::config::Region) -> &'static str {
+    use crate::modules::config::Region;
+    match region {
+        Region::Cn => "workbuddy-desktop.info",
+        Region::Intl => "workbuddy-desktop-ai.info",
+    }
+}
+
+/// 指定区域的认证文件路径。
+pub fn auth_file_path_for(region: crate::modules::config::Region) -> PathBuf {
+    auth_dir().join(auth_file_name_for(region))
+}
+
+/// 默认（国服）认证文件路径。保留原签名以避免影响既有调用点。
+pub fn auth_file_path() -> PathBuf {
+    auth_file_path_for(crate::modules::config::Region::Cn)
 }
 
 /// WorkBuddy 应用路径。
@@ -47,6 +69,16 @@ pub fn workbuddy_app_path() -> PathBuf {
 }
 
 /// 读取认证文件 JSON；不存在或解析失败返回 None。
+/// 读取指定区域的认证文件；不存在或解析失败返回 None。
+pub fn read_auth_file_for(region: crate::modules::config::Region) -> Option<Value> {
+    let path = auth_file_path_for(region);
+    if !path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 pub fn read_auth_file() -> Option<Value> {
     let path = auth_file_path();
     if !path.exists() {
@@ -262,6 +294,11 @@ fn setdefault(map: &mut Map<String, Value>, key: &str, value: Value) {
 }
 
 /// 从当前 WorkBuddy 登录态导入账号。对照 server.py `import_from_auth_file`。
+/// 从指定区域的认证文件导入账号。
+pub fn import_from_auth_file_for(region: crate::modules::config::Region) -> Option<Value> {
+    imported_account_from_root(read_auth_file_for(region)?)
+}
+
 pub fn import_from_auth_file() -> Option<Value> {
     imported_account_from_root(read_auth_file()?)
 }

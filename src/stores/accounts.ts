@@ -41,7 +41,12 @@ interface AccountsState {
   ensureCredits: (accountIds: string[]) => Promise<void>;
   /** Force-refresh credits. `silent` skips toolbar/card loading flicker (timer). */
   refreshCredits: (accountIds: string[], opts?: { silent?: boolean }) => Promise<void>;
-  importLocal: () => Promise<AccountMeta>;
+  importLocal: () => Promise<{
+    ok: boolean;
+    account: AccountMeta | null;
+    accounts: AccountMeta[];
+    imported: number;
+  }>;
   reconcileAccounts: () => Promise<void>;
 }
 
@@ -102,9 +107,10 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
   },
 
   async importLocal() {
+    // 一次性导入所有可发现区域（国服 + 国际版）
     const res = await api.importLocal();
     await get().reconcileAccounts();
-    return res.account;
+    return res;
   },
 
   async reconcileAccounts() {

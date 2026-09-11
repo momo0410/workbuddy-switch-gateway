@@ -249,7 +249,18 @@ export function oauthStatus(loginId: string): Promise<OAuthPollResult> {
   return call("oauth_status", { loginId });
 }
 
-export function importLocal(): Promise<{ ok: boolean; account: AccountMeta }> {
+/**
+ * 从本机导入账号。
+ *
+ * 会同时探测国服与国际版两个认证文件，把能读到的账号全部并入账号库；
+ * `account` 为首个账号（兼容旧调用方），`accounts` 为本次全部结果。
+ */
+export function importLocal(): Promise<{
+  ok: boolean;
+  account: AccountMeta | null;
+  accounts: AccountMeta[];
+  imported: number;
+}> {
   return call("import_local");
 }
 

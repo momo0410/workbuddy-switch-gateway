@@ -310,8 +310,17 @@ export default function AccountsPage() {
   async function onImport() {
     setImporting(true);
     try {
-      const acc = await importLocal();
-      toast.success("账号已导入", { description: acc.nickname || acc.email || acc.id });
+      const res = await importLocal();
+      const list = res.accounts ?? [];
+      if (list.length === 0) {
+        toast.error("未发现本机账号", { description: "请先在 WorkBuddy 客户端登录" });
+        return;
+      }
+      // 标明区域：同一台机器可能同时存在国服与国际版登录态
+      const detail = list
+        .map((a) => `${a.nickname || a.email || a.id}（${a.region ?? "未知区域"}）`)
+        .join("、");
+      toast.success(`已导入 ${list.length} 个账号`, { description: detail });
     } catch (e) {
       toast.error("导入失败", { description: api.asError(e) });
     } finally {

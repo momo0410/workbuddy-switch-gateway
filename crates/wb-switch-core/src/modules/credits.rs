@@ -9,7 +9,9 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 use crate::modules::account::{account_display_name, build_auth_headers};
-use crate::modules::config::{http_request, load_checkin_config, now_ms, WORKBUDDY_API_ENDPOINT};
+use crate::modules::config::{
+    http_request, load_checkin_config, now_ms, WORKBUDDY_API_ENDPOINT, WORKBUDDY_API_ENDPOINT_INTL,
+};
 use crate::modules::credit_usage;
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
@@ -420,6 +422,8 @@ fn new_resource_endpoint(account: &Value) -> &'static str {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
+        // 国际版：Web 与 API 同域（凭据域为 www.workbuddy.ai）
+        d if d.is_some_and(|s| s.ends_with(".ai")) => WORKBUDDY_API_ENDPOINT_INTL,
         Some("workbuddy.cn") | Some("www.workbuddy.cn") => WORKBUDDY_WEB_ENDPOINT,
         _ => WORKBUDDY_API_ENDPOINT,
     }
