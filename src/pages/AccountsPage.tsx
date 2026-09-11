@@ -38,6 +38,16 @@ import type { AccountMeta, AppStatus, CheckinConfig, CodeBuddyCliStatus, CodeBud
 import { cn } from "@/lib/utils";
 import { useAccountsStore } from "@/stores/accounts";
 
+/**
+ * 按区域过滤账号：自动签到 / 自动旅行仅覆盖国服账号。
+ *
+ * 国际版（workbuddy.ai）的签到与旅行接口没有真实数据，自动任务永久不覆盖它们；
+ * 界面上对应的状态标签也不查、不显示，避免长期停在「未签到 / 未旅行」。
+ */
+function accountsInScope(accounts: AccountMeta[]): AccountMeta[] {
+  return accounts.filter((account) => account.regionKey !== "intl");
+}
+
 function expiringSoonAmount(credit?: CreditExpiry): number {
   return credit?.ok ? credit.expiringSoonRemaining ?? 0 : 0;
 }
@@ -182,6 +192,16 @@ export default function AccountsPage() {
     void fetchAll();
   }, [fetchAll]);
 
+  /**
+   * 今日签到 / 旅行状态只查询范围内账号（默认仅国服）。
+   *
+   * 国际版账号既不会自动签到也不会有旅行数据，若仍去查状态，卡片会长期显示
+   * 「未签到 / 未旅行」，且每轮都为它多打两次无效请求；改为只查范围内账号，
+   * 卡片自然不渲染这两个标签。
+   */
+  const scopedAccounts = accountsInScope(accounts);
+  const travelScopedAccounts = accountsInScope(accounts);
+
   useEffect(() => {
     let cancelled = false;
     void api
@@ -262,17 +282,18 @@ export default function AccountsPage() {
     };
   }, [accounts.length]);
 
-  // 账号列表变化后并行查询各账号今日签到状态
+  // 账号列表变化后并行查询各账号今日签到状态（仅查国服账号）
   useEffect(() => {
-    if (!accounts.length) return;
+    if (!scopedAccounts.length) {
+      setCheckinMap({});
+      return;
+    }
     let cancelled = false;
     void fetchTodayCheckinMap(
-      accounts.map((account) => account.id),
+      scopedAccounts.map((account) => account.id),
       () => cancelled,
     ).then((next) => {
-      if (!cancelled && Object.keys(next).length > 0) {
-        setCheckinMap((prev) => ({ ...prev, ...next }));
-      }
+      if (!cancelled) setCheckinMap(next);
     });
     return () => {
       cancelled = true;
@@ -287,10 +308,14 @@ export default function AccountsPage() {
   }
 
   // 账号列表变化后并行查询旅行状态；后台领取后每 60 秒再拉一次，避免卡片停在「旅行中」。
+  // 同样只查国服账号：国际版的旅行接口无数据，查了只会一直显示「未旅行」。
   useEffect(() => {
-    if (!accounts.length) return;
+    if (!travelScopedAccounts.length) {
+      setTravelMap({});
+      return;
+    }
     let cancelled = false;
-    const ids = accounts.map((account) => account.id);
+    const ids = travelScopedAccounts.map((account) => account.id);
     void loadTravelMap(ids, () => cancelled);
     const timer = window.setInterval(() => {
       void loadTravelMap(ids, () => cancelled);
@@ -355,7 +380,7 @@ export default function AccountsPage() {
       if (enabled) {
         toast.success("自动旅行已开启", { description: "正在按官方状态派发或领取" });
         window.setTimeout(() => {
-          void loadTravelMap(accounts.map((account) => account.id));
+          void loadTravelMap(accountsInScope(accounts).map((account) => account.id));
         }, 2500);
       }
     } catch (e) {
@@ -460,8 +485,8 @@ export default function AccountsPage() {
         } else {
           toast.success("签到完成", { description: summary });
         }
-        // 批量签到后重查全部账号的今日签到状态，无需切换页面即反映最新结果
-        const next = await fetchTodayCheckinMap(accounts.map((account) => account.id));
+        // 批量签到后重查国服账号的今日签到状态，无需切换页面即反映最新结果
+        const next = await fetchTodayCheckinMap(scopedAccounts.map((account) => account.id));
         if (Object.keys(next).length > 0) {
           setCheckinMap((prev) => ({ ...prev, ...next }));
         }
@@ -469,7 +494,7 @@ export default function AccountsPage() {
         toast.error("批量签到失败", { description: api.asError(e) });
       }
       await refreshCredits(accounts.map((account) => account.id));
-      await loadTravelMap(accounts.map((account) => account.id));
+      await loadTravelMap(travelScopedAccounts.map((account) => account.id));
       toast.success("积分到期情况已刷新");
     } finally {
       setCheckinAllRunning(false);
@@ -739,7 +764,7 @@ export default function AccountsPage() {
             </Badge>
           </div>
           <TooltipProvider delayDuration={400}>
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
               <div className="mr-1 flex items-center gap-2.5">
                 <label htmlFor="accounts-auto-checkin" className="cursor-pointer text-xs font-medium text-muted-foreground">
                   自动签到
@@ -753,6 +778,18 @@ export default function AccountsPage() {
                     aria-label="自动签到"
                   />
                 </DemoAction>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="secondary"
+                      className="h-7 cursor-default rounded-md border-0 px-2 text-[11px] font-normal text-muted-foreground shadow-none"
+                      aria-label="自动签到仅覆盖国服账号"
+                    >
+                      仅国服
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">自动签到为国服专属，国际版接口暂无数据</TooltipContent>
+                </Tooltip>
                 {autoCheckinSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="正在保存自动签到设置" />}
               </div>
               <div className="mr-1 flex items-center gap-2.5">
@@ -768,6 +805,18 @@ export default function AccountsPage() {
                     aria-label="自动旅行"
                   />
                 </DemoAction>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="secondary"
+                      className="h-7 cursor-default rounded-md border-0 px-2 text-[11px] font-normal text-muted-foreground shadow-none"
+                      aria-label="自动旅行仅覆盖国服账号"
+                    >
+                      仅国服
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">自动旅行为国服专属，国际版暂无 Buddy 数据</TooltipContent>
+                </Tooltip>
                 {autoTravelSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="正在保存自动旅行设置" />}
               </div>
               <Separator orientation="vertical" className="mx-2 h-5" />

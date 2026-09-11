@@ -36,8 +36,9 @@
 同步或重启容器。
 
 > **来源声明**：本项目是**整合改造**而非从零开发。绝大多数代码来自上述两个上游项目，
-> 整合部分（网关页面、账号同步、单文件内嵌、单实例保护及若干缺陷修复）由
-> [momo0410](https://github.com/momo0410) 完成。详见 [上游来源与许可证](#上游来源与许可证)。
+> 整合部分（网关页面、账号同步、单文件内嵌、单实例保护、按到期日分层选号及若干
+> 缺陷修复）由 [momo0410](https://github.com/momo0410) 完成。
+> 详见 [上游来源与许可证](#上游来源与许可证)。
 
 ---
 
@@ -45,13 +46,13 @@
 
 ### 账号管理
 
-源自 [workbuddy-switch](https://github.com/changexbc/workbuddy-switch)。
+基于 [workbuddy-switch](https://github.com/changexbc/workbuddy-switch) 的账号管理能力。
 
 | 模块 | 能力 |
 |---|---|
 | 账号入库 | OAuth 扫码登录、从本机客户端导入、手动添加 Token |
 | 账号切换 | WorkBuddy 客户端、CodeBuddy CLI、CodeBuddy CN IDE 三套登录态互相独立切换 |
-| 自动签到 | 启动即核验，运行期周期性补签，保留 30 天签到日志 |
+| 自动签到 | 启动即核验，运行期周期性补签，保留 30 天签到日志（**国服专属**，见下） |
 | Token 保活 | 惰性刷新（操作前低于阈值即刷新）+ 每日保活，避免 refresh token 过期失效 |
 | 积分监控 | 查询各账号积分资源、剩余量与到期时间，7 天内到期高亮并优先排序 |
 | 积分统计 | 汇总官方请求用量：每日趋势、模型分布、账号消耗、请求明细 |
@@ -61,28 +62,93 @@
 
 ### 兼容网关
 
-源自 [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)。
+基于 [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的 OpenAI 兼容网关。
 
 - **OpenAI 兼容接口**：`POST /v1/chat/completions`（流式 / 非流式）、`GET /v1/models`
-- **账号池调度**：三因子加权随机选号 —— 积分比例 ×10 + 闲置补偿 + 成功率 ×3
+- **账号池调度**：**按积分到期日分层选号** —— 先烧快过期额度（详见下节）
 - **熔断与冷却**：429/404 软冷却、余额不足硬冷却至次日 04:00、连续失败指数退避熔断、在途租约限流
 - **会话粘性**：同一会话尽量绑定同一账号，TTL 滚动续期，失败自动解绑
 - **定时任务**：每日 09:00 / 21:00 签到 + 余额查询解冻；22:00 全账号 Token 刷新保活
+- **积分到期巡检**：独立于签到的高频刷新（默认 15 分钟），驱动分层选号
 - **猫猫旅行**：随签到时点自动巡检（详见下节）
 - **出站脱敏**：请求体黑名单指纹字段清洗（可关闭）
 - **状态持久化**：池状态本地原子落盘，可选 Upstash Redis 镜像
 
+#### 按到期日分层选号
+
+这是本项目对上游网关**最重要的一处改动**。上游原本是「三因子加权随机选号」
+（积分比例 ×10 + 闲置补偿 + 成功率 ×3），问题在于：**快过期的额度仍会被分走一部分
+流量，而额度一旦过期就是净损失**。
+
+改后的选号是**两级策略**：
+
+| 层级 | 规则 | 目的 |
+|---|---|---|
+| **1. 到期分层** | 按「最近到期积分」的**到期日**把候选分组，只保留最早到期的那一档 | 让「先烧快过期额度」成为**确定性**行为，而非概率行为 |
+| **2. 档内挑选** | 同档内按「闲置补偿 + 成功率」加权取 Top5，再加权随机 | 同一天到期的账号**平均分摊**，不让高积分号吃掉大部分流量 |
+
+几个关键设计：
+
+- **用「日」而非精确时刻做分层键**：上游额度按天失效，同一天到期的账号视为同一档
+- **档内权重去掉 credits 项**：同一到期档意味着紧迫度相同，若仍按积分加权，
+  高积分账号会长期倾斜，与「同档平均分摊」相悖。闲置补偿与成功率作为小幅微调保留
+  （前者防止某个号被完全闲置，后者让持续报错的号自然让出流量），二者量级远小于原 credits 的 ×10
+- **到期日未知的账号排最后**：只在其它账号都不可用时才轮到它们
+- **无到期信息时自动回退**：所有候选都没有到期数据时，退回原三因子口径，
+  行为与引入分层前一致
+
+#### 积分到期巡检
+
+分层选号的依据是「最近到期日」，而它会**随消费实时变化** —— 某账号把快过期额度烧完后，
+最近到期日跳到下一档，此时就应立刻让出流量。签到每天只跑两次，间隔太远会让分层
+长期依据过时数据。因此引入独立巡检：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| 周期 | `15m` | `pool.credit_refresh_interval` |
+| 开关 | `true` | `pool.credit_refresh_enabled` |
+| 账号间隔 | `300ms` | 避免瞬间并发打满上游 |
+
+巡检**只刷新余额与到期日**，不签到、不改账号状态。启动时先跑一轮，避免重启后要等
+一个周期才拿到到期日。余额恢复的账号会顺带复活，不必等到下一个签到时点。
+
+- **`credits` 与到期日分开更新**（`SetCreditsAndExpiry`）：二者来源不同 ——
+  credits 由签到 / 巡检更新，到期日还可能来自宿主写入的凭证元数据
+- **到期日持久化进 `state.json`**：重启后立刻恢复分层，无需等首轮巡检
+
+#### 凭证 `credit` 元数据的保活
+
+分层依据有**两个来源**，按新鲜度覆盖：
+
+1. 凭证文件里的 `credit` 块（宿主 `workbuddy-switch` 查询后写入）
+2. 网关自身的积分巡检
+
+因此宿主侧导出凭证时必须**原样透传 `credit` 块**（`build_auth_doc` 的 `credit` 参数）。
+若丢掉它，每次账号同步都会把依据抹掉一次 —— 表现为**分层均衡时灵时不灵**。这是整合
+过程中踩到并修复的一个隐蔽缺陷。
+
+> 时间戳精度：上游混用秒与毫秒，`normalizeEpoch()` 按量级归一成秒。
+> 宿主侧导出时也有一次毫秒 → 秒换算（`to_sec`）。
+
 #### 网关工作模式
 
-可在「兼容网关」页面随时切换，两种模式都完整保留熔断、冷却、会话粘性：
+可在「兼容网关」页面随时切换，**点击即时生效**（自动重导出凭证并按需重启网关），
+两种模式都完整保留熔断、冷却、会话粘性：
 
 | 模式 | 行为 | 适用场景 |
 |---|---|---|
-| **负载均衡**（默认） | 账号池加权随机选号，自动跳过冷却 / 熔断中的账号 | 多账号均衡使用，追求吞吐与高可用 |
+| **负载均衡**（默认） | 先打最近到期的积分，同一天到期的账号平均分摊；自动跳过冷却 / 熔断中的账号 | 多账号均衡使用，避免积分过期作废 |
 | **指定账号** | 只使用你选定的那一个账号 | 固定身份、单独消耗某账号额度、排查单个账号问题 |
 
 > 实现方式：网关依据凭证目录建立账号池，指定账号模式只需**只导出该账号的凭证**。
 > 因此无需改动网关注册逻辑，也不会损失其任何治理能力。切换时旧凭证会被自动清理。
+>
+> 由于账号池是网关**启动时**扫描凭证目录建立的，模式切换必须重导出凭证并重启子进程
+> 才真正生效 —— 这一步已由核心层的 `switch_mode` 合并完成（保存配置 → 重导出 →
+> 按需重启），用户点一下即可，无需手动重启。
+>
+> 「指定账号」模式未选择账号时会被提前拦截并给出可操作提示，而不是让你看到一个
+> 「启动了但没有账号」的网关。
 
 #### 猫猫旅行
 
@@ -109,6 +175,8 @@
 | 能力 | 说明 |
 |---|---|
 | **账号自动同步** | 账号库变更后自动推送到网关凭证目录；网关运行中则自动重启加载。约 30 秒内生效 |
+| **模式切换即时生效** | 「负载均衡 ↔ 指定账号」点击即生效，无需手动重启网关 |
+| **凭证元数据保活** | 同步时保留网关写入的 `credit` 块，避免分层选号依据被抹掉 |
 | **端口自由选择** | 界面内直接改端口，实时检测占用并给出建议，可一键切换空闲端口 |
 | **单文件分发** | 网关二进制 gzip 压缩后编进主程序，运行时按内容指纹释放到缓存，**只需分发一个 exe** |
 | **单实例保护** | 重复启动不会开出第二个窗口，而是聚焦（必要时从托盘唤回）已有实例 |
@@ -139,6 +207,8 @@
 | 聊天端点 | `copilot.tencent.com`（与 API **分域**） | `www.workbuddy.ai`（**同域**） |
 | 凭证 `domain` | `www.workbuddy.cn` | `www.workbuddy.ai` |
 | 本机认证文件 | `workbuddy-desktop.info` | `workbuddy-desktop-ai.info` |
+| 自动签到 / 自动旅行 | ✅ 参与 | ⛔ **跳过**（见下） |
+| Token 保活 | ✅ 参与 | ✅ 参与 |
 | 代表模型 | `deepseek-v4-flash`、`glm-5.2`、`kimi-k2.7` | `gpt-5.6-*`、`gemini-3.5-flash`、`deepseek-v4.1-flash` |
 
 **区域判定**：按账号库 `domain` 字段后缀（`.cn` → 国服，`.ai` → 国际版）。
@@ -146,6 +216,34 @@
 
 **一键导入**：「账号管理」页的「从本机导入」会**同时探测两个区域的认证文件**，
 把本机已登录的账号全部并入账号库，提示中会标明各自区域。
+
+账号卡片上会给国际版账号打一个「国际版」标记，国服账号不加标记。
+
+### 自动签到与猫猫旅行是国服专属
+
+国际版（`workbuddy.ai`）的相关接口目前**尚未提供真实数据**，实测（2026-09）：
+
+| 接口 | 国际版实测返回 |
+|---|---|
+| `POST /v2/billing/meter/checkin-activity-status` | `200`，但 `active: false`、`today_checked_in: false`、`daily_credit: 0` |
+| `GET /activity/growth/buddy/travel/status` | `200`，但 `data: {}`（没有 `state` 字段） |
+| `GET /activity/growth/buddy/travel/config` | `200`，但 `data: {}`（没有地点列表） |
+
+也就是说，对国际版账号签到**拿不到积分**，派猫猫旅行也只会落到「查询旅行状态失败」
+并每 30 分钟重试一次。因此**自动签到与自动旅行硬绑定为「仅国服」**：
+
+- **自动签到 / 自动旅行**：只对国服账号执行
+- **一键签到 / 托盘「一键签到」**：同样只覆盖国服账号
+- **账号卡片**：国际版账号不显示「已签到 / 未签到」标签，也不会为它发无效请求
+- **`token` 保活不受影响**：国际版账号照常刷新 token（刷新接口是可用的）
+
+> 为什么是硬绑定而非开关：该字段早期版本曾是配置项（`region_scope` = `"cn" | "all"`），
+> 但由于国际版接口始终没有数据，留着开关只会让用户切到 `all` 后得到一堆无意义的
+> 失败日志。现已移除 UI 与配置读写，历史配置里残留的 `region_scope` 会被忽略。
+>
+> **需要连国际版一起做**（例如上游补齐了接口）：把 `~/.wb-switch/gateway/gateway_native_config.json`
+> 的 `schedule.checkin_scope` 改成 `"all"` 可让**网关侧**的签到与旅行覆盖国际版。
+> 该键默认 `"cn"`，不在界面上暴露，属于手动逃生口。App 侧（Rust）的自动任务无此开关。
 
 > **模型名不通用**：两区域模型名不同（国服 `deepseek-v4-flash` / 国际版 `deepseek-v4.1-flash`）。
 > `/v1/models` 返回两区域模型的并集，但**某个名称能否用取决于实际选中的账号属于哪个区域**；
@@ -184,7 +282,8 @@
 网关凭证是派生素材。
 
 **同步规则**：
-- 账号库 → 网关：按 uid 生成嵌套形凭证；账号删除或模式切换后自动清理残留
+- 账号库 → 网关：按 uid 生成嵌套形凭证；**保留网关写入的 `credit` 块**；
+  账号删除或模式切换后自动清理残留
 - 网关 → 账号库：网关自身刷新 Token 后，按过期时间较新者回写（空 refresh token 不覆盖已有值）
 - 内容无变化时不写盘，避免无意义的文件时间戳变动与网关重启
 
@@ -201,7 +300,9 @@
 | 磁盘 | 约 50 MB |
 | 其他 | 无需安装 Docker、Node.js 或 Go |
 
-> macOS / Linux 的构建脚本已在仓库中，但尚未实际验证运行效果。
+> **目前仅验证 Windows**。仓库内保留有 macOS / Linux 的构建脚本与 CI 矩阵
+> （`.github/workflows/build.yml`，默认被 `.gitignore` 忽略），但**尚未实际验证
+> 运行效果**，相关平台的代码分支也不在本项目的维护范围内。
 
 ### 安装方式一：安装包（推荐）
 
@@ -228,7 +329,7 @@
 git clone --depth 1 https://github.com/Sliverkiss/workbuddy2api.git
 cd workbuddy2api
 
-#    应用「国际版支持」补丁（需要国际版时才要；只做国服可跳过）
+#    应用本项目补丁（国际版路由 + 到期分层选号 + 积分巡检）
 git apply ..\workbuddy-switch-gateway\patches\intl-support.patch
 
 go build -trimpath -ldflags "-s -w" `
@@ -243,6 +344,11 @@ cd ..\workbuddy-switch-gateway
 npm install
 npm run tauri build
 ```
+
+> 网关源码不在本仓库内，通过 `patches/intl-support.patch` 对上游施加改动。
+> 构建脚本 `build.rs` **不联网**：它只在本机查找预编译的 `gateway.exe`
+> （顺序：`WB_SWITCH_GATEWAY_BIN` 环境变量 → `crates/wb-switch-core/embedded/` → `dist/`）。
+> 找不到时不内嵌，程序仍可编译运行，回退到用户自备网关的旧路径。
 
 ---
 
@@ -261,8 +367,15 @@ npm run tauri build
 2. 设置**服务端口**（默认 `7863`）— 输入框右侧会实时显示端口是否可用
    - 若显示「已被占用」，点击「自动」自动挑选空闲端口，或点建议端口一键切换
 3. 设置 **API Key**（留空表示不鉴权；公网部署务必设置）
-4. 选择**工作模式**：负载均衡 / 指定账号（后者需选择具体账号）
+4. 选择**工作模式**：负载均衡 / 指定账号（后者需选择具体账号，**点击即时生效**）
 5. 点击「启动网关」
+
+网关页面的**账号池**区域会显示每个账号的到期档位：
+
+| 显示 | 含义 |
+|---|---|
+| `到期 MM-DD` | 该账号「最近到期积分」的到期日，即分层档位；同一天的账号同级平均分摊 |
+| `到期未知` | 尚未取到到期信息，会排在其他账号之后，仅在它们不可用时才使用 |
 
 ### 客户端接入
 
@@ -288,7 +401,8 @@ curl $OPENAI_BASE_URL/chat/completions \
 
 ### 网关配置项
 
-配置文件位于 `~/.wb-switch/gateway/gateway_config.json`，也可在界面中修改：
+配置文件位于 `~/.wb-switch/gateway/gateway_config.json`（本项目字段），
+转换后交给网关进程的是 `gateway_native_config.json`。均可在界面中修改（除注明外）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -299,6 +413,21 @@ curl $OPENAI_BASE_URL/chat/completions \
 | `auto_start` | `false` | 随应用启动自动拉起网关 |
 | `checkin_enabled` | `true` | 是否启用签到排程（猫猫旅行随之启停） |
 | `keepalive_enabled` | `true` | 是否启用 Token 保活排程 |
+
+网关原生配置（`gateway_native_config.json`，需手动编辑）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `schedule.checkin_scope` | `"cn"` | 网关侧签到 / 旅行的区域范围；`"all"` = 含国际版 |
+| `pool.credit_refresh_interval` | `"15m"` | 积分到期巡检周期 |
+| `pool.credit_refresh_enabled` | `true` | 是否启用积分到期巡检 |
+| `pool.idle_weight_per_hour` | `0.5` | 档内权重的闲置补偿 |
+| `pool.idle_weight_max` | `5.0` | 闲置补偿封顶 |
+| `pool.max_in_flight` | `3` | 单账号在途租约上限 |
+| `pool.breaker_threshold` | `3` | 连续失败几次触发熔断 |
+
+> 关闭积分巡检（`credit_refresh_enabled: false`）后，分层选号将只依赖签到与宿主同步
+> 的数据，到期档位更新会明显滞后。
 
 ### 托盘与单实例
 
@@ -313,9 +442,10 @@ curl $OPENAI_BASE_URL/chat/completions \
 | 内容 | 路径 | 说明 |
 |---|---|---|
 | 账号库 | `~/.wb-switch/accounts.json` | **唯一真源**，含所有账号凭证，建议单独备份 |
-| 网关凭证 | `~/.wb-switch/gateway/gateway_auths/` | 由账号库派生，删除后可自动重建 |
+| 网关凭证 | `~/.wb-switch/gateway/gateway_auths/` | 由账号库派生，含网关回写的 `credit` 块，删除后可自动重建 |
 | 网关配置 | `~/.wb-switch/gateway/gateway_config.json` | 端口、API Key、模式等 |
-| 网关原生配置 | `~/.wb-switch/gateway/gateway_native_config.json` | 转换后交给网关进程的配置 |
+| 网关原生配置 | `~/.wb-switch/gateway/gateway_native_config.json` | 转换后交给网关进程的配置（含 pool / schedule） |
+| 网关状态 | `~/.wb-switch/gateway/state.json` | 池运行态；含持久化的到期日，重启后恢复分层 |
 | 内嵌网关副本 | `~/.wb-switch/gateway/bin/` | 按内容指纹命名，版本升级后自动更新 |
 | 签到 / 轮换日志 | `~/.wb-switch/*_logs.json` | 最多保留 30 天 |
 
@@ -340,6 +470,17 @@ curl $OPENAI_BASE_URL/chat/completions \
 > 正常情况下约 30 秒内自动同步。若网关正在运行，同步后会短暂重启以加载新账号
 > （这是网关只在启动时扫描凭证目录的设计所限）。也可在页面点「立即同步」手动触发。
 
+**Q：切换工作模式需要手动重启网关吗？**
+> 不需要。账号池是网关**启动时**扫描凭证目录建立的，因此模式切换必须重导出凭证
+> 并重启子进程才真正生效 —— 这一步已由 `switch_mode` 自动完成（保存配置 →
+> 重导出 → 按需重启）。若网关当时没在运行，则只做前两步，下次启动自然是新池。
+
+**Q：账号池里的「到期」档位是什么意思？**
+> 那是该账号「最近到期积分」的到期日，也是负载均衡的**分层依据**。网关优先把流量
+> 导向最早到期的那一档，同一天到期的账号平均分摊，避免积分过期作废。
+> 显示「到期未知」表示还没取到到期信息，这类账号会排在最后。
+> 档位由积分巡检每 15 分钟刷新，会在积分烧完后自动跳到下一档。
+
 **Q：窗口关闭后应用消失了吗？**
 > 没有。窗口被隐藏到系统托盘，后台任务与网关仍在运行。右键托盘图标可重新打开
 > 主界面或彻底退出。
@@ -348,6 +489,12 @@ curl $OPENAI_BASE_URL/chat/completions \
 > 可以放在同一账号库，按 `domain` 自动路由。但**模型名不通用**：混合账号池下
 > 用某个区域的模型名请求，可能被路由到另一区域账号而返回 `11102`，网关会自动
 > 换号重试（表现为偶发变慢）。需要稳定时，用「指定账号」模式锁定对应区域的账号。
+
+**Q：为什么国际版账号不会被自动签到、也看不到旅行标签？**
+> 国际版的签到与成长中心接口目前不返回真实数据（签到状态恒为未签到且
+> `daily_credit: 0`，旅行 `status`/`config` 恒返回空 `data`）。所以自动签到、
+> 自动旅行、一键签到都**硬绑定为仅国服**，卡片上也只给国际版加「国际版」标记
+> 而不显示签到标签。token 保活不受影响。
 
 **Q：国际版的模型列表为什么是固定的？**
 > 上游 `/console/enterprises/personal/models` 在国际版返回 500，无法动态拉取，
@@ -366,9 +513,10 @@ curl $OPENAI_BASE_URL/chat/completions \
 ```
 crates/wb-switch-core/        核心逻辑（不依赖 Tauri，可被桌面端与 HTTP 服务复用）
   src/modules/account.rs        账号存储
+  src/modules/checkin.rs        自动签到（国服专属）
+  src/modules/travel.rs         猫猫旅行（App 侧，国服专属）
   src/modules/gateway.rs        网关托管与账号桥接（本项目新增）
   src/modules/gateway_embed.rs  内嵌网关的释放与缓存（本项目新增）
-  src/modules/travel.rs         猫猫旅行（App 侧）
   build.rs                      构建期压缩内嵌网关（本项目新增）
 crates/wb-switch-server/      HTTP 服务形态（npm / webui）
 src/                          React 前端
@@ -377,6 +525,7 @@ src-tauri/                    桌面壳（Tauri 2）
   src/tray.rs                   托盘与单实例行为
   src/commands.rs               前端可调用的命令
 scripts/build-single.ps1      构建单一可执行文件（本项目新增）
+patches/intl-support.patch    对上游 Go 网关的改动
 ```
 
 ### 测试
@@ -386,42 +535,80 @@ cargo test -p wb-switch-core    # 核心逻辑单元测试
 npm run build                   # 前端类型检查与构建
 ```
 
-网关侧（Go）自带完整测试套件：
+> 已知有 3 个单测在 Windows 上失败（`session` / `export_import` / `codebuddy_cli`
+> 各一），原因是断言里硬编码了 POSIX 路径（如 `/tmp`、`/Users/...`）。
+> 对应实现本身是正确的，属于测试自身的跨平台问题。
+
+网关侧（Go）自带完整测试套件；应用补丁后：
 
 ```bash
 cd path/to/workbuddy2api && go test ./...
 ```
 
+> 上游 `TestPickAntiThunderingHerd`（防雪崩）在补丁前后均会失败，属上游既有问题。
+
 ---
 
 ## 对上游的改动
 
-本项目对 `workbuddy2api`（Go 网关）做了少量改动以支持国际版，以补丁形式维护：
+本项目对 `workbuddy2api`（Go 网关）的改动以补丁形式维护：
 
 ```
-patches/intl-support.patch
+patches/intl-support.patch        （基于上游 cfb1713 生成）
 ```
 
-改动内容：
+### 1. 到期分层选号（`internal/pool/pool.go`）
 
-- `internal/upstream/client.go`：新增 `isIntl()` 区域判定（按 `auth.Domain` 后缀）
-  与 `BaseIntl` 字段；`chatBase()` / `billingBase()` 改为**按账号区域返回域名**
-- `internal/upstream/headers.go`：`Origin` / `Referer` 跟随账号区域
+**最重要的一处改动**：把原来的三因子加权随机改为**两级选号**。
+
+| 新增 | 作用 |
+|---|---|
+| `entry.expireAt` | 账号「最近到期积分」的到期时刻（运行期权威值） |
+| `(*entry).expiryDayKey()` | 按本地时区取到期日 `YYYY-MM-DD`，作为分层键 |
+| `(*Pool).earliestExpiryTierLocked()` | 只保留最早到期的一档；未知到期排最后；全员未知时不分档 |
+| `(*Pool).tierWeightOf()` | 档内权重：闲置补偿 + 成功率，**去掉 credits 项** |
+| `(*Pool).pickWeightedMode()` | 按是否分层选择权重口径 |
+| `(*Pool).SetExpiry()` / `SetCreditsAndExpiry()` | 由巡检回填到期日 |
+| `Status.SoonestExpireAt` / `ExpireDay` | 暴露给宿主界面显示档位 |
+| `stateAccount.ExpireAt` | 持久化到期日，重启后立刻恢复分层 |
+
+### 2. 积分到期巡检（`internal/scheduler/scheduler.go`、`cmd/server/main.go`）
+
+- 新增 `RunCreditRefreshLoop` / `RunCreditRefreshNow` / `refreshCreditsWithGap`：
+  周期性刷新余额与到期日（不签到、不解冻），账号间隔 300ms
+- `RunCheckinNow` 改用 `UserResourceDetail`，一次请求同时取回余额与最近到期日
+- 新增 `DefaultCreditRefreshInterval = 15m` 与 `RunCreditRefreshNow` 手动入口
+
+### 3. `credit` 元数据的解析与写回（`internal/auth/auth.go`）
+
+- `Auth.SoonestExpireAt` 字段；`creditBlock` 解析凭证里的 `credit` 块
+  （嵌套形与扁平形都支持）
+- `normalizeEpoch()`：上游混用秒 / 毫秒，按量级统一成秒
+- `SaveAtomic()` 保留 `credit` 块 —— 否则 token 刷新重写凭证时会丢掉到期信息
+
+### 4. 国际版区域路由（`internal/upstream/`）
+
+- `client.go`：新增 `IsIntl()`（按 `auth.Domain` 后缀）与 `BaseIntl` 字段；
+  `chatBase()` / `billingBase()` 改为**按账号区域返回域名**
+- `headers.go`：`Origin` / `Referer` 跟随账号区域
   （国服 `codebuddy.cn`、国际版 `workbuddy.ai`）
-- `internal/server/handler.go`：新增国际版静态模型表，`/v1/models` 返回两区域并集
+
+### 5. 国际版模型表与签到范围（`internal/server/handler.go`、`cmd/server/config.go`）
+
+- 新增国际版静态模型表，`/v1/models` 返回两区域并集
   （国际版的模型列表接口返回 500，无法动态拉取）
+- 新增 `schedule.checkin_scope`（`cn` 缺省 / `all`）与 `checkinScopeAllows()`：
+  网关侧签到与猫猫旅行默认**跳过国际版账号**；token 保活不受该开关限制
 
-补丁基于上游 `cfb1713` 生成，已验证可在更新的上游提交上干净应用并编译通过。
-
-> 若你只使用国服，可跳过该补丁，功能与上游一致。
+---
 
 ## 上游来源与许可证
 
-本项目基于以下两个开源项目整合改造，**绝大部分代码来自上游**：
+本项目基于以下两个开源项目**整合改造**，绝大部分代码来自上游：
 
 | 项目 | 作者 | 提供的部分 | 许可证 |
 |---|---|---|---|
-| [workbuddy-switch](https://github.com/changexbc/workbuddy-switch) | [changexbc](https://github.com/changexbc) | 桌面 GUI 外壳、账号管理、签到、积分与 Token 统计、托盘、CLI 切换等全部界面与核心逻辑 | **MIT** |
+| [workbuddy-switch](https://github.com/changexbc/workbuddy-switch) | [changexbc](https://github.com/changexbc) | 桌面 GUI 外壳、账号管理、签到、积分与 Token 统计、托盘、CLI 切换等界面与核心逻辑 | **MIT** |
 | [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) | [Sliverkiss](https://github.com/Sliverkiss) | OpenAI 兼容网关（账号池轮转、熔断冷却、会话粘性、SSE 规范化、猫猫旅行等） | **MIT** |
 
 两个上游项目均采用 **MIT 许可证**，允许使用、修改与再分发。本仓库已保留其原始
@@ -430,14 +617,18 @@ patches/intl-support.patch
 整合部分（本项目新增）同样以 MIT 许可证发布。逐项来源说明与改动清单见
 [`NOTICE`](./NOTICE)。
 
+> 本仓库是**独立整合作品**，与上述两个上游项目相互独立、各自演进。
+> 上游的后续更新不会被自动合入；对网关的改动以 `patches/` 下的补丁形式单独维护。
+> 本项目不代表上游作者的立场或背书。
+
 ### 许可证
 
 ```
 MIT License
 
-Copyright (c) 2026 wb-switch        （workbuddy-switch 原作者）
-Copyright (c) 2026 Sliverkiss        （workbuddy2api 原作者）
-Copyright (c) 2026 momo0410          （本项目整合部分）
+Copyright (c) 2026 wb-switch / changexbc   （workbuddy-switch 原作者）
+Copyright (c) 2026 Sliverkiss              （workbuddy2api 原作者）
+Copyright (c) 2026 momo0410                （本项目整合部分）
 ```
 
 完整条款见 [`LICENSE`](./LICENSE)。

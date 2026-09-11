@@ -251,7 +251,11 @@ fn to_sec(ms: i64) -> i64 {
 }
 
 /// 为单个账号生成网关凭证 JSON（嵌套形，与 internal/auth.Parse 对齐）。
-fn build_auth_doc(acc: &Value) -> Option<(String, String)> {
+///
+/// `credit` 参数是上一次导出/网关回写留下的积分到期元数据，原样透传。
+/// 必须保留：它由网关的积分巡检写入，是「按到期紧迫度分层选号」的依据；
+/// 若这里丢掉，每次账号同步都会把依据抹掉一次（表现为分层均衡时灵时不灵）。
+fn build_auth_doc(acc: &Value, credit: Option<Value>) -> Option<(String, String)> {
     let uid = account::get_str(acc, "uid")?;
     let access = account::get_str(acc, "access_token")?;
     let refresh = account::get_str(acc, "refresh_token").unwrap_or_default();
@@ -260,7 +264,7 @@ fn build_auth_doc(acc: &Value) -> Option<(String, String)> {
     let domain = account::get_str(acc, "domain").unwrap_or_default();
     let expires_ms = acc.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
 
-    let doc = json!({
+    let mut doc = json!({
         "auth": {
             "accessToken": access,
             "refreshToken": refresh,
@@ -273,8 +277,20 @@ fn build_auth_doc(acc: &Value) -> Option<(String, String)> {
             "nickname": nickname,
         },
     });
+    if let Some(c) = credit {
+        if c.is_object() {
+            doc["credit"] = c;
+        }
+    }
     let file = format!("workbuddy-{uid}.json");
     Some((file, serde_json::to_string_pretty(&doc).ok()?))
+}
+
+/// 读取凭证文件里已有的 credit 块（网关积分巡检写入）；无则返回 None。
+fn read_credit_block(path: &std::path::Path) -> Option<Value> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc: Value = serde_json::from_str(&text).ok()?;
+    doc.get("credit").filter(|v| v.is_object()).cloned()
 }
 
 /// 计算账号库的内容指纹：只要 uid + token + 过期时间有变化就算「脏」。
@@ -453,8 +469,11 @@ pub fn export_accounts_to_gateway() -> Result<(usize, Vec<String>), String> {
         if !should_export(acc) {
             continue;
         }
-        let Some((file, text)) = build_auth_doc(acc) else { continue };
+        let Some((file, _)) = build_auth_doc(acc, None) else { continue };
         let path = dir.join(&file);
+        // 保留网关写入的 credit 元数据（积分到期分层选号的依据）。
+        let credit = read_credit_block(&path);
+        let Some((_, text)) = build_auth_doc(acc, credit) else { continue };
         // 内容一致则不写盘，避免无意义的文件时间戳变动
         if let Ok(existing) = std::fs::read_to_string(&path) {
             if existing.trim() == text.trim() {
@@ -656,6 +675,9 @@ fn write_native_config(cfg: &Value) -> Result<PathBuf, String> {
             "checkin_enabled": cfg.get("checkin_enabled").and_then(Value::as_bool).unwrap_or(true),
             // 缺省 true；false = 关 token 保活
             "keepalive_enabled": cfg.get("keepalive_enabled").and_then(Value::as_bool).unwrap_or(true),
+            // 签到 + 猫猫旅行的区域范围：cn（缺省，仅国服）/ all。
+            // 国际版（workbuddy.ai）的 billing 与 growth 接口暂无真实数据，默认跳过。
+            "checkin_scope": cfg.get("checkin_scope").and_then(Value::as_str).unwrap_or("cn"),
         },
         "upstream": {
             "timeout_seconds": 120,
@@ -1064,6 +1086,94 @@ pub fn sync_only() -> Value {
     }
 }
 
+/// 构造模式切换要落盘的配置补丁。
+///
+/// 抽成纯函数便于测试：`switch_mode` 会真的写用户配置并可能重启网关，
+/// 不适合在单测里直接调用。
+///
+/// 语义：切到负载均衡时 `pinned_uid` 置 null（避免残留旧锁定值导致
+/// 下次切回指定账号时用到意料之外的账号）；空串同样归一为 null。
+fn mode_patch(mode: GatewayMode, pinned_uid: Option<&str>) -> Value {
+    let pinned = match pinned_uid.map(str::trim) {
+        Some(uid) if !uid.is_empty() => json!(uid),
+        _ => Value::Null,
+    };
+    json!({
+        "mode": mode.as_str(),
+        "pinned_uid": pinned,
+    })
+}
+
+/// 切换工作模式（负载均衡 / 指定账号）并**立即生效**。
+///
+/// 为什么需要这个专用入口：`save_gateway_config` 只写配置文件，
+/// 而网关的账号池是**启动时**扫描 `gateway_auths/` 建立的，两者都不会
+/// 因改配置而变化。于是用户点了「指定账号」后，池里仍是全部账号，
+/// 必须手动点「重启」才真正生效（这正是「切换模式要重启」的根因）。
+///
+/// 这里把三件事合成一步：
+///  1. 落盘新配置（mode / pinned_uid）
+///  2. 按新模式重导出凭证（清理不再需要的账号文件）
+///  3. 若网关正在运行，重启它以加载新池
+///
+/// 未运行时只做 1+2：下次启动自然是新池，无需空转重启。
+pub async fn switch_mode(mode: GatewayMode, pinned_uid: Option<String>) -> Value {
+    let patch = mode_patch(mode, pinned_uid.as_deref());
+    let cfg = match save_gateway_config(&patch) {
+        Ok(v) => v,
+        Err(e) => return json!({ "ok": false, "error": e }),
+    };
+
+    // 指定账号模式必须先选好账号，否则池会是空的 —— 提前拦住并给出可操作提示，
+    // 而不是让用户看到一个「启动了但没有账号」的网关。
+    if mode == GatewayMode::Pinned && pinned_uid.as_deref().unwrap_or("").trim().is_empty() {
+        return json!({
+            "ok": false,
+            "error": "「指定账号」模式需要先选择一个账号",
+            "config": cfg,
+        });
+    }
+
+    let (count, changed) = match export_accounts_to_gateway() {
+        Ok(v) => v,
+        Err(e) => return json!({ "ok": false, "error": e, "config": cfg }),
+    };
+
+    let mut reloaded = false;
+    if is_running() {
+        stop_gateway();
+        // 停止后端口需要一点时间释放（TIME_WAIT / 子进程退出），
+        // 否则紧接着的 start 会因端口被占用而失败。
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        match start_gateway(&cfg).await {
+            Ok(_) => {
+                reloaded = true;
+                update_runtime_state("started", None);
+            }
+            Err(e) => {
+                update_runtime_state("failed", Some(e.clone()));
+                return json!({
+                    "ok": false,
+                    "error": format!("模式已保存，但重启网关失败：{e}"),
+                    "accounts": count,
+                    "changed": changed,
+                    "config": cfg,
+                });
+            }
+        }
+    }
+
+    json!({
+        "ok": true,
+        "mode": mode.as_str(),
+        "pinnedUid": pinned_uid,
+        "accounts": count,
+        "changed": changed,
+        "reloaded": reloaded,
+        "config": cfg,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1167,5 +1277,98 @@ mod tests {
     fn finalize_fills_listen_default() {
         let cfg = super::finalize_gateway_config(json!({"listen": "  "}));
         assert_eq!(cfg["listen"], ":7863");
+    }
+
+    // 模式切换补丁：切回负载均衡必须清掉 pinned_uid（否则残留旧锁定值）。
+    #[test]
+    fn mode_patch_sets_mode_and_pinned() {
+        let p = super::mode_patch(GatewayMode::Pinned, Some("uid-1"));
+        assert_eq!(p["mode"], "pinned");
+        assert_eq!(p["pinned_uid"], "uid-1");
+
+        // 负载均衡：pinned_uid 归 null，不带任何遗留值。
+        let b = super::mode_patch(GatewayMode::Balance, None);
+        assert_eq!(b["mode"], "balance");
+        assert!(b["pinned_uid"].is_null());
+
+        // 空串/纯空白同样归一为 null（前端「未选择」会传空串）。
+        for empty in ["", "   "] {
+            let e = super::mode_patch(GatewayMode::Pinned, Some(empty));
+            assert!(e["pinned_uid"].is_null(), "empty {empty:?} must become null");
+        }
+
+        // uid 首尾空白被裁掉（避免与账号库里的 uid 不匹配导致导出为空）。
+        let t = super::mode_patch(GatewayMode::Pinned, Some("  uid-2  "));
+        assert_eq!(t["pinned_uid"], "uid-2");
+    }
+
+    // 模式字符串解析：未知值一律回落 balance（不报错、不误锁账号）。
+    #[test]
+    fn gateway_mode_from_str_defaults_to_balance() {
+        assert_eq!(GatewayMode::from_str("pinned"), GatewayMode::Pinned);
+        assert_eq!(GatewayMode::from_str("PINNED"), GatewayMode::Pinned);
+        assert_eq!(GatewayMode::from_str("single"), GatewayMode::Pinned);
+        assert_eq!(GatewayMode::from_str("balance"), GatewayMode::Balance);
+        assert_eq!(GatewayMode::from_str(""), GatewayMode::Balance);
+        assert_eq!(GatewayMode::from_str("garbage"), GatewayMode::Balance);
+    }
+
+    // 凭证导出必须原样带着 credit 块：它是网关「按积分到期分层选号」的依据。
+    // 丢了它，每次账号同步都会把依据抹掉一次，表现为分层均衡时灵时不灵。
+    #[test]
+    fn build_auth_doc_preserves_credit_block() {
+        let acc = json!({
+            "uid": "u1",
+            "access_token": "at",
+            "refresh_token": "rt",
+            "nickname": "n1",
+            "domain": "www.workbuddy.cn",
+            "expiresAt": 1793263003967i64,
+        });
+
+        // 无 credit：不出现该键（保持文件精简）。
+        let (file, text) = super::build_auth_doc(&acc, None).expect("doc");
+        assert_eq!(file, "workbuddy-u1.json");
+        let doc: Value = serde_json::from_str(&text).unwrap();
+        assert!(doc.get("credit").is_none(), "no credit expected: {text}");
+        // expiresAt 必须转成秒（网关侧按秒解析）。
+        assert_eq!(doc["auth"]["expiresAt"], 1793263003i64);
+
+        // 有 credit：原样透传（网关据此分档）。
+        let credit = json!({"soonestExpireAt": 1790639067i64});
+        let (_, text2) = super::build_auth_doc(&acc, Some(credit)).expect("doc");
+        let doc2: Value = serde_json::from_str(&text2).unwrap();
+        assert_eq!(doc2["credit"]["soonestExpireAt"], 1790639067i64);
+
+        // 非对象（脏数据）不应写进凭证。
+        let (_, text3) = super::build_auth_doc(&acc, Some(json!("garbage"))).expect("doc");
+        let doc3: Value = serde_json::from_str(&text3).unwrap();
+        assert!(doc3.get("credit").is_none(), "non-object credit must be ignored");
+    }
+
+    // read_credit_block 从已有凭证里取回 credit；文件缺失/损坏/无该键时返回 None。
+    #[test]
+    fn read_credit_block_handles_missing_and_malformed() {
+        let dir = std::env::temp_dir().join(format!("wb-switch-credit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good = dir.join("good.json");
+        std::fs::write(&good, r#"{"auth":{},"credit":{"soonestExpireAt":123}}"#).unwrap();
+        assert_eq!(
+            super::read_credit_block(&good).unwrap()["soonestExpireAt"],
+            123
+        );
+
+        let nokey = dir.join("nokey.json");
+        std::fs::write(&nokey, r#"{"auth":{}}"#).unwrap();
+        assert!(super::read_credit_block(&nokey).is_none());
+
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        assert!(super::read_credit_block(&bad).is_none());
+
+        assert!(super::read_credit_block(&dir.join("absent.json")).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

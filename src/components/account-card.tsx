@@ -1,4 +1,4 @@
-import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Loader2, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Globe, Loader2, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -157,6 +157,29 @@ function travelChip(status: TravelStatus | undefined) {
   }
 }
 
+/** 国际版（workbuddy.ai）账号标注；国服账号不显示，避免噪音。 */
+function regionChip(account: AccountMeta) {
+  if (account.regionKey !== "intl") return null;
+  const label = account.region || "国际版";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className={cn(chipClass, "gap-1 border-sky-500/30 bg-sky-500/10 text-sky-700")}
+          aria-label={`${label}账号`}
+        >
+          <Globe className="size-3" />
+          {label}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        国际版账号（{account.regionKey === "intl" ? "workbuddy.ai" : ""}）· 不参与自动签到与自动旅行
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 interface Props {
   account: AccountMeta;
   onDelete: (a: AccountMeta) => void;
@@ -242,6 +265,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
 
   const statusChips = (
     <>
+      {regionChip(account)}
       {todayCheckedIn !== undefined && (
         <Badge variant={todayCheckedIn ? "success" : "secondary"} className={cn(chipClass, !todayCheckedIn && "text-muted-foreground")}><CircleCheck /> {todayCheckedIn ? "已签到" : "未签到"}</Badge>
       )}

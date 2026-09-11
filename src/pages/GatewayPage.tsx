@@ -106,6 +106,10 @@ function PoolAccountRow({ acc }: { acc: GatewayPoolAccount }) {
     : acc.cooling
       ? { label: "冷却中", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400" }
       : { label: "健康", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" };
+  // 到期日就是选号分层档位：同一 expire_day 的账号在均衡时同级（平均分摊）。
+  const expiry = acc.expire_day
+    ? { label: `到期 ${acc.expire_day.slice(5)}`, title: `最近到期积分：${acc.expire_day}（同一天的账号同级平均分摊）` }
+    : { label: "到期未知", title: "尚未取到积分到期信息：会排在其他账号之后，仅在它们不可用时才使用" };
   return (
     <div className="mx-4 flex min-w-0 items-center gap-3 border-b border-border/50 py-2.5 last:border-b-0 sm:mx-5">
       <div className="min-w-0 flex-1">
@@ -116,6 +120,15 @@ function PoolAccountRow({ acc }: { acc: GatewayPoolAccount }) {
         {typeof acc.in_flight === "number" && acc.in_flight > 0 ? <span>在途 {acc.in_flight}</span> : null}
         {typeof acc.success_count === "number" && acc.success_count > 0 ? <span>成功 {acc.success_count}</span> : null}
         {typeof acc.err_total === "number" && acc.err_total > 0 ? <span>失败 {acc.err_total}</span> : null}
+        <span
+          className={cn(
+            "rounded-md px-1.5 py-0.5",
+            acc.expire_day ? "bg-muted" : "bg-muted/50 text-muted-foreground/70",
+          )}
+          title={expiry.title}
+        >
+          {expiry.label}
+        </span>
         <span
           className={cn("rounded-md px-1.5 py-0.5 font-medium", state.cls)}
           title={acc.reason || undefined}
@@ -163,21 +176,31 @@ export default function GatewayPage() {
   }, []);
 
   /**
-   * 切换工作模式并立即持久化。
+   * 切换工作模式并立即生效。
    *
-   * 模式属于开关型设置：若只改本地状态而等用户点「保存」，5 秒后的轮询会用
-   * 后端旧值把它覆盖回负载均衡（用户看到的「点了一会又跳回去」）。
-   * 因此这里乐观更新 + 立即保存，失败再回滚。
+   * 两件事必须一起做，否则用户看到的是「点了没反应」：
+   *  1. 模式属于开关型设置：若只改本地状态而等用户点「保存」，5 秒后的轮询会用
+   *     后端旧值把它覆盖回负载均衡（用户看到的「点了一会又跳回去」）。
+   *  2. 网关账号池是**启动时**扫描凭证目录建立的，光写配置不会改变池内容，
+   *     因此必须重导出凭证并重启网关才真正生效。
+   * `switchGatewayMode` 在 core 里把「保存 + 重导出 + 按需重启」合成一步。
    */
   async function changeMode(next: GatewayMode) {
     const uid =
       next === "pinned"
         ? pinnedUid || status?.accounts?.[0]?.uid || ""
         : null;
+    if (next === "pinned" && !uid) {
+      toast.error("「指定账号」模式需要先选择一个账号");
+      return;
+    }
     setMode(next);
     setPinnedUid(uid ?? "");
     try {
-      await api.saveGatewayConfig({ mode: next, pinned_uid: uid });
+      const res = await api.switchGatewayMode(next, uid);
+      if (res.reloaded) {
+        toast.success(next === "pinned" ? "已切换为指定账号并重启网关" : "已切换为负载均衡并重启网关");
+      }
       await refresh();
     } catch (e) {
       toast.error(api.asError(e));
@@ -200,11 +223,11 @@ export default function GatewayPage() {
     }
   }
 
-  /** 指定账号模式下切换目标账号，同样立即持久化。 */
+  /** 指定账号模式下切换目标账号，同样立即生效（重导出凭证 + 按需重启）。 */
   async function changePinnedUid(uid: string) {
     setPinnedUid(uid);
     try {
-      await api.saveGatewayConfig({ mode: "pinned", pinned_uid: uid });
+      await api.switchGatewayMode("pinned", uid);
       await refresh();
     } catch (e) {
       toast.error(api.asError(e));
@@ -468,8 +491,8 @@ export default function GatewayPage() {
             <div className="text-[13px]">工作模式</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">
               {mode === "balance"
-                ? "账号池加权随机选号，自动避开冷却/熔断的账号"
-                : "只使用下方指定的这一个账号"}
+                ? "先打最近到期的积分，同一天到期的账号平均分摊（点击即时生效）"
+                : "只使用下方指定的这一个账号（点击即时生效）"}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">

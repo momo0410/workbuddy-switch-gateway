@@ -6,6 +6,7 @@ import {
   Check,
   CircleAlert,
   CircleCheck,
+  Globe,
   Loader2,
   Sparkles,
   RefreshCw,
@@ -46,6 +47,7 @@ import type {
   // CreditStatsEvent, // 最近事件卡片隐藏后未使用
   CreditStatistics,
 } from "@/lib/types";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAccountsStore } from "@/stores/accounts";
 
 type RangeKey = "30d" | "today" | "7d" | "month";
@@ -99,6 +101,35 @@ function formatChartDate(date: string): string {
 
 function accountLabel(account: { accountName?: string | null; accountId: string }): string {
   return account.accountName || account.accountId;
+}
+
+/**
+ * 该账号是否为国际版（workbuddy.ai）。
+ *
+ * 统计用的是网关/账号库里的 uid，而区域只存在于账号元数据里；这里按账号 id
+ * 反查账号列表，取不到时按国服处理（历史账号只有国服）。
+ */
+function isIntlAccount(accountId: string): boolean {
+  const account = useAccountsStore.getState().accounts.find((item) => item.id === accountId || item.uid === accountId);
+  return account?.regionKey === "intl";
+}
+
+/** 国际版标注：自动签到与自动旅行默认不覆盖国际版账号。 */
+function IntlAccountBadge({ accountId }: { accountId: string }) {
+  if (!isIntlAccount(accountId)) return null;
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge variant="outline" className="shrink-0 gap-1 border-sky-500/30 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-700">
+            <Globe className="size-3" />
+            国际版
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent side="top">国际版账号（workbuddy.ai）· 不参与自动签到与自动旅行</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 function AccountFilterMenu({
@@ -155,7 +186,8 @@ function AccountFilterMenu({
         )}
         {accounts.map((account) => (
           <DropdownMenuItem key={account.accountId} onSelect={() => onAccountFilterChange(account.accountId)}>
-            <span className="min-w-0 flex-1 truncate">{accountLabel(account)}</span>
+            <span className="min-w-0 truncate">{accountLabel(account)}</span>
+            <IntlAccountBadge accountId={account.accountId} />
             {effectiveFilter === account.accountId && <Check className="ml-auto size-3.5 shrink-0" />}
           </DropdownMenuItem>
         ))}
@@ -1019,7 +1051,10 @@ function ResourcesByAccount({
     <div className="divide-y divide-border/60">
       {accounts.map((account) => (
         <div key={account.accountId} className="min-w-0">
-          <div className="px-4 py-2.5 text-xs font-medium sm:px-5">{accountLabel(account)}</div>
+          <div className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium sm:px-5">
+            <span className="min-w-0 truncate">{accountLabel(account)}</span>
+            <IntlAccountBadge accountId={account.accountId} />
+          </div>
           <ResourceBreakdown credit={creditMap[account.accountId]} loading={creditLoadingMap[account.accountId]} />
         </div>
       ))}

@@ -400,7 +400,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
 fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<Menu<R>> {
     let open_item = MenuItem::with_id(app, "open-main-window", "打开主界面", true, None::<&str>)?;
     let github_item = MenuItem::with_id(app, "open-github", "打开 GitHub", true, None::<&str>)?;
-    let checked_in = checkin::all_accounts_checked_in_today();
+    let checked_in = checkin::scoped_accounts_checked_in_today();
     let (checkin_label, checkin_enabled) = if CHECKIN_BUSY.load(Ordering::Acquire) {
         ("一键签到", false)
     } else if checked_in {

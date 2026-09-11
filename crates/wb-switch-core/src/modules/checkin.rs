@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use crate::modules::account::{account_display_name, build_auth_headers, load_accounts};
 use crate::modules::config::{
-    add_checkin_log, http_request, load_checkin_config, load_checkin_logs, now_ms, RunFlagGuard,
-    api_endpoint_for, CHECKIN_API_PREFIX,
+    account_supported_by_auto_tasks, add_checkin_log, api_endpoint_for, http_request,
+    load_checkin_config, load_checkin_logs, now_ms, RunFlagGuard, CHECKIN_API_PREFIX,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
@@ -23,6 +23,19 @@ static CHECKIN_ACCOUNTS_RUNNING: OnceLock<Mutex<HashSet<String>>> = OnceLock::ne
 
 /// Automatic recovery cadence shared by every host.
 pub const CHECKIN_RECOVERY_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// 按自动任务的覆盖范围挑选账号。
+///
+/// 自动签到 / 自动旅行是**国服专属**：上游国际版（workbuddy.ai）的
+/// `checkin-activity-status` 恒返回 `active:false / today_checked_in:false`，
+/// 对它提交签到没有实际意义，只会反复产生无用的日志与网络请求。
+pub fn accounts_in_scope(accounts: &[Value]) -> Vec<Value> {
+    accounts
+        .iter()
+        .filter(|account| account_supported_by_auto_tasks(account))
+        .cloned()
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckinCycleMode {
@@ -252,6 +265,7 @@ pub fn date_str(ts_ms: Option<i64>) -> String {
 
 /// 执行一轮自动签到。启动与周期轮次均逐账号查询服务端状态。
 ///
+/// 只覆盖配置允许的区域（默认仅国服，见 [`accounts_in_scope`]）；
 /// 并发锁防止与手动签到/上一轮重复运行。
 pub async fn run_checkin_cycle(_mode: CheckinCycleMode) -> Value {
     let Some(_guard) = RunFlagGuard::try_acquire(&CHECKIN_RUNNING) else {
@@ -261,7 +275,7 @@ pub async fn run_checkin_cycle(_mode: CheckinCycleMode) -> Value {
     if cfg.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
         return json!({"status": "disabled"});
     }
-    let accounts = load_accounts();
+    let accounts = accounts_in_scope(&load_accounts());
     if accounts.is_empty() {
         return json!({"status": "no_accounts"});
     }
@@ -277,11 +291,17 @@ pub async fn run_checkin_cycle(_mode: CheckinCycleMode) -> Value {
     summary
 }
 
-/// True when every stored account has a today's log of `success` or `already`.
+/// 托盘/一键签到口径：只统计自动任务覆盖范围内的账号。
 ///
-/// Empty account list is false so the tray keeps offering 一键签到.
-pub fn all_accounts_checked_in_today() -> bool {
-    accounts_checked_in_today(&load_accounts(), &load_checkin_logs(), &date_str(None))
+/// 范围外的账号（国际版）永远不会有签到日志，若一并纳入判断，
+/// 「一键签到」会永远停在可点状态、无法显示「已签到」。
+/// 范围内没有账号时返回 false，托盘仍提供「一键签到」。
+pub fn scoped_accounts_checked_in_today() -> bool {
+    accounts_checked_in_today(
+        &accounts_in_scope(&load_accounts()),
+        &load_checkin_logs(),
+        &date_str(None),
+    )
 }
 
 pub fn accounts_checked_in_today(accounts: &[Value], logs: &[Value], today: &str) -> bool {
@@ -308,23 +328,27 @@ fn latest_today_result<'a>(logs: &'a [Value], account_id: &str, today: &str) -> 
         .and_then(|entry| entry.get("result").and_then(Value::as_str))
 }
 
-/// 对全部账号立即签到（前端一键签到）。
+/// 对全部账号立即签到（前端一键签到 / 托盘「一键签到」）。
+///
+/// 与自动签到一致，只覆盖国服账号；国际版账号会被直接跳过。
 pub async fn run_checkin_all() -> Value {
     let Some(_guard) = RunFlagGuard::try_acquire(&CHECKIN_RUNNING) else {
         return json!({"accounts": [], "status": "skipped", "reason": "already_running"});
     };
-    let accounts = load_accounts();
+    let accounts = accounts_in_scope(&load_accounts());
     let mut results: Vec<Value> = Vec::new();
-    for acc in accounts {
-        let r = checkin_account(&acc).await;
+    for acc in &accounts {
+        let r = checkin_account(acc).await;
         results.push(json!({
             "accountId": acc.get("id").cloned().unwrap_or(Value::Null),
-            "email": account_display_name(&acc),
+            "email": account_display_name(acc),
             "result": r.get("result").cloned().unwrap_or(Value::Null),
             "error": r.get("error").cloned().unwrap_or(Value::Null),
         }));
     }
-    json!({"accounts": results})
+    json!({
+        "accounts": results,
+    })
 }
 
 #[cfg(test)]
@@ -409,5 +433,20 @@ mod tests {
         assert!(!accounts_checked_in_today(&[], &[], "2026-08-19"));
         let accounts = vec![json!({"id": "a"})];
         assert!(!accounts_checked_in_today(&accounts, &[], "2026-08-19"));
+    }
+
+    #[test]
+    fn region_scope_keeps_only_cn_accounts() {
+        let accounts = vec![
+            json!({"id": "cn", "domain": "www.workbuddy.cn"}),
+            json!({"id": "intl", "domain": "www.workbuddy.ai"}),
+            json!({"id": "legacy"}),
+        ];
+        let scoped = accounts_in_scope(&accounts);
+        let ids: Vec<&str> = scoped
+            .iter()
+            .filter_map(|a| a.get("id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(ids, vec!["cn", "legacy"]);
     }
 }

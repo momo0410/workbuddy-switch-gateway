@@ -18,6 +18,8 @@ import type {
   CopyResult,
   GatewayConfig,
   GatewayConfigResult,
+  GatewayMode,
+  GatewayModeSwitchResult,
   GatewayStartResult,
   GatewayStatus,
   GatewayPortCheck,
@@ -126,6 +128,7 @@ const ROUTES: Record<string, Route> = {
   get_gateway_status: { method: "GET", path: "/api/gateway/status" },
   get_gateway_config: { method: "GET", path: "/api/gateway/config" },
   save_gateway_config: { method: "POST", path: "/api/gateway/config" },
+  switch_gateway_mode: { method: "POST", path: "/api/gateway/mode" },
   start_gateway: { method: "POST", path: "/api/gateway/start" },
   check_gateway_port: { method: "POST", path: "/api/gateway/port-check" },
   stop_gateway: { method: "POST", path: "/api/gateway/stop" },
@@ -577,4 +580,20 @@ export function restartGateway(): Promise<GatewayStartResult> {
 /** 手动触发账号双向同步。 */
 export function syncGatewayAccounts(autoReload = true): Promise<GatewaySyncResult> {
   return call<GatewaySyncResult>("sync_gateway_accounts", { autoReload });
+}
+
+/**
+ * 切换网关工作模式并立即生效。
+ *
+ * 与 saveGatewayConfig 的区别：那个只写配置文件，而网关账号池是启动时建立的，
+ * 因此改完必须手动重启才生效。此接口把「保存 + 重导出凭证 + 按需重启」合成一步。
+ */
+export function switchGatewayMode(
+  mode: GatewayMode,
+  pinnedUid?: string | null,
+): Promise<GatewayModeSwitchResult> {
+  return call<GatewayModeSwitchResult>("switch_gateway_mode", {
+    mode,
+    pinnedUid: pinnedUid ?? null,
+  });
 }

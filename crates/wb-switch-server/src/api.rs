@@ -108,6 +108,7 @@ pub fn router() -> Router {
         // ---- 网关（workbuddy2api）集成 ----
         .route("/api/gateway/status", get(api_gateway_status))
         .route("/api/gateway/config", get(api_gateway_config).post(api_save_gateway_config))
+        .route("/api/gateway/mode", post(api_switch_gateway_mode))
         .route("/api/gateway/start", post(api_gateway_start))
         .route("/api/gateway/port-check", post(api_gateway_port_check))
         .route("/api/gateway/stop", post(api_gateway_stop))
@@ -717,6 +718,30 @@ async fn api_save_gateway_config(Json(body): Json<Value>) -> Response {
         Ok(v) => json_ok(json!({ "config": v })),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/gateway/mode —— 切换工作模式并立即生效（重导出凭证 + 按需重启）。
+///
+/// 与 /api/gateway/config 的区别：后者只写配置文件，而网关账号池是启动时
+/// 建立的，改完必须手动重启才生效。此接口把三步合成一步。
+async fn api_switch_gateway_mode(Json(body): Json<Value>) -> Response {
+    let mode = body.get("mode").and_then(Value::as_str).unwrap_or("balance");
+    let pinned = body
+        .get("pinnedUid")
+        .or_else(|| body.get("pinned_uid"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let mode = wb_switch_core::modules::gateway::GatewayMode::from_str(mode);
+    let result = wb_switch_core::modules::gateway::switch_mode(mode, pinned).await;
+    if result.get("ok").and_then(Value::as_bool) == Some(false) {
+        let msg = result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("切换模式失败")
+            .to_string();
+        return json_err(msg, StatusCode::BAD_REQUEST);
+    }
+    json_ok(result)
 }
 
 /// POST /api/gateway/start —— 启动网关（可选 body.port 指定端口）。

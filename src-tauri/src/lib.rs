@@ -197,6 +197,7 @@ pub fn run() {
             commands::get_gateway_config,
             commands::save_gateway_config,
             commands::check_gateway_port,
+            commands::switch_gateway_mode,
             commands::start_gateway,
             commands::stop_gateway,
             commands::restart_gateway,

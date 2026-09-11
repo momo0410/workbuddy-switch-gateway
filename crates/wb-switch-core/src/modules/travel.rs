@@ -12,14 +12,27 @@ use std::time::Duration;
 
 use crate::modules::account::{account_display_name, build_auth_headers, load_accounts};
 use crate::modules::config::{
-    http_request, load_checkin_config, load_travel_cache, load_travel_config, now_ms, now_secs,
-    save_travel_cache, with_travel_cache_lock, RunFlagGuard, TRAVEL_API_PREFIX,
-    api_endpoint_for,
+    account_supported_by_auto_tasks, api_endpoint_for, http_request, load_checkin_config,
+    load_travel_cache, load_travel_config, now_ms, now_secs, save_travel_cache,
+    with_travel_cache_lock, RunFlagGuard, TRAVEL_API_PREFIX,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
 static TRAVEL_RUNNING: AtomicBool = AtomicBool::new(false);
 static TRAVEL_CLAIM_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 自动旅行覆盖的账号集合：仅国服账号。
+///
+/// 国际版（workbuddy.ai）的成长中心尚未上线：`travel/status` 与 `travel/config`
+/// 恒返回空 `data`，派猫只会在缓存里留下 `status-error` 并反复重试，
+/// 因此自动派发与领取不再覆盖国际版账号。
+pub fn accounts_in_scope(accounts: &[Value]) -> Vec<Value> {
+    accounts
+        .iter()
+        .filter(|account| account_supported_by_auto_tasks(account))
+        .cloned()
+        .collect()
+}
 
 /// 派发周期：启动即派发，之后每 30 分钟补一轮（并重试 no-buddy / 瞬时错误）。
 pub const TRAVEL_RETRY_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -813,6 +826,8 @@ async fn sync_account_for_dispatch(account: &Value, prior: Option<&Value>) -> Va
 }
 
 /// 对所有账号依次派猫猫旅行（每日缓存幂等；存在可重试项时不标记当日完成）。
+///
+/// 只覆盖配置允许的区域（默认仅国服，见 [`accounts_in_scope`]）。
 pub async fn run_travel_cycle() -> Value {
     let Some(_guard) = RunFlagGuard::try_acquire(&TRAVEL_RUNNING) else {
         return json!({"status": "skipped", "reason": "already_running"});
@@ -821,7 +836,7 @@ pub async fn run_travel_cycle() -> Value {
     if cfg.get("enabled").and_then(Value::as_bool) != Some(true) {
         return json!({"status": "disabled"});
     }
-    let accounts = load_accounts();
+    let accounts = accounts_in_scope(&load_accounts());
     if accounts.is_empty() {
         return json!({"status": "no_accounts"});
     }
@@ -890,7 +905,7 @@ pub async fn run_travel_claim_cycle() -> Value {
         return json!({"status": "skipped", "reason": "nothing-to-claim"});
     }
 
-    let accounts = load_accounts();
+    let accounts = accounts_in_scope(&load_accounts());
     let mut claimed = 0;
     let total = ids.len();
     let mut overlay_results = Map::new();
@@ -965,7 +980,7 @@ pub async fn reconcile_due_travel(account_id: Option<&str>) {
         return;
     }
 
-    let accounts = load_accounts();
+    let accounts = accounts_in_scope(&load_accounts());
     let mut overlay_results = Map::new();
     for id in due {
         let Some(account) = accounts
@@ -1193,6 +1208,22 @@ mod tests {
         });
         assert!(in_flight_due(&millis, 1_788_964_568));
         assert!(!in_flight_due(&millis, 1_788_964_567));
+    }
+
+    #[test]
+    fn region_scope_keeps_only_cn_accounts() {
+        let accounts = vec![
+            json!({"id": "cn", "domain": "www.workbuddy.cn"}),
+            json!({"id": "intl", "domain": "www.workbuddy.ai"}),
+            json!({"id": "legacy"}),
+        ];
+        assert_eq!(crate::modules::config::Region::ALL.len(), 2, "区域枚举仍应包含两个区域");
+        let ids: Vec<&str> = accounts
+            .iter()
+            .filter(|a| crate::modules::config::account_supported_by_auto_tasks(a))
+            .filter_map(|a| a.get("id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(ids, vec!["cn", "legacy"]);
     }
 
     #[test]

@@ -114,6 +114,12 @@ export interface CheckinConfig {
   end_hour?: number;
   keepalive_days: number;
   lazy_refresh_hours: number;
+  /**
+   * 历史字段：旧版本曾用 `"cn" | "all"` 控制覆盖区域。
+   * 自动签到 / 自动旅行现已硬绑定为「仅国服」，后端忽略此字段，
+   * 前端不再读取或写入，仅作为兼容旧配置文件保留类型定义。
+   */
+  region_scope?: "cn" | "all";
 }
 
 export interface CheckinLog {
@@ -131,6 +137,12 @@ export interface CheckinResult {
 
 export interface TravelConfig {
   enabled: boolean;
+  /**
+   * 历史字段：旧版本曾用 `"cn" | "all"` 控制覆盖区域。
+   * 自动旅行现已硬绑定为「仅国服」，后端忽略此字段，
+   * 前端不再读取或写入，仅作为兼容旧配置文件保留类型定义。
+   */
+  region_scope?: "cn" | "all";
 }
 
 export type TravelStatusLabel = "untraveled" | "no-buddy" | "traveling" | "finished";
@@ -463,6 +475,10 @@ export interface GatewayPoolAccount {
   success_count?: number;
   err_total?: number;
   in_flight?: number;
+  /** 「最近到期积分」的到期时刻（Unix 秒）；缺省 = 未知。 */
+  soonest_expire_at?: number;
+  /** 到期日（YYYY-MM-DD），即选号分层档位键；同一天的账号同级。 */
+  expire_day?: string;
 }
 
 /** 网关 /status 响应。 */
@@ -532,6 +548,20 @@ export interface GatewaySyncResult {
   changed?: string[];
   updatedFromGateway?: string[];
   reloaded?: boolean;
+  error?: string;
+}
+
+/** POST /api/gateway/mode 响应（切换模式并立即生效）。 */
+export interface GatewayModeSwitchResult {
+  ok: boolean;
+  mode?: GatewayMode;
+  pinnedUid?: string | null;
+  /** 重导出后的账号数。 */
+  accounts?: number;
+  changed?: string[];
+  /** 是否因模式变更重启了网关（未运行时为 false）。 */
+  reloaded?: boolean;
+  config?: GatewayConfig;
   error?: string;
 }
 

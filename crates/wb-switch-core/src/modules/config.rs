@@ -69,6 +69,25 @@ impl Region {
 pub fn api_endpoint_for(account: &serde_json::Value) -> &'static str {
     Region::of(account).api_endpoint()
 }
+
+// ---------------------------------------------------------------------------
+// 自动签到 / 自动旅行：国服专属
+// ---------------------------------------------------------------------------
+//
+// 历史说明：早期版本曾在配置里提供 `region_scope` 字段（`"cn" | "all"`），
+// 允许用户选择「仅国服」还是「国服 + 国际版」。由于上游国际版（workbuddy.ai）
+// 的签到接口 (`checkin-activity-status`) 与猫猫旅行接口 (`travel/status`)
+// 至今不返回真实数据，对国际版账号执行只会产生无意义的失败日志与请求，
+// 该字段已在前端 UI 中移除，后端也不再读取。
+//
+// 现在自动签到 / 自动旅行**硬绑定**为「仅国服」。任何历史配置文件里残留的
+// `region_scope` 字段都将在加载时被丢弃，写出时也不会再写回。
+
+/// 判断账号是否为自动签到 / 自动旅行的覆盖目标：仅国服账号。
+pub fn account_supported_by_auto_tasks(account: &Value) -> bool {
+    Region::of(account) == Region::Cn
+}
+
 pub const WORKBUDDY_API_PREFIX: &str = "/v2/plugin";
 pub const WORKBUDDY_PLATFORM: &str = "workbuddy";
 
@@ -428,7 +447,9 @@ pub fn add_checkin_log(entry: &Value) {
 
 /// 默认自动旅行配置。
 pub fn default_travel_config() -> Value {
-    json!({ "enabled": true })
+    json!({
+        "enabled": true,
+    })
 }
 
 /// 读取自动旅行配置（缺失/损坏时合并默认值）。

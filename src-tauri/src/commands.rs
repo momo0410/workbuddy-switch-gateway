@@ -666,6 +666,26 @@ pub fn check_gateway_port(port: u16) -> Result<Value, String> {
     Ok(wb_switch_core::modules::gateway::inspect_port(port))
 }
 
+/// 切换网关工作模式并立即生效（重导出凭证 + 按需重启）。
+///
+/// 与 `save_gateway_config` 的区别：后者只写配置文件，而网关的账号池是
+/// 启动时建立的，因此改完必须手动重启才生效。本命令把「保存 + 重导出 + 重启」
+/// 合成一步，让「负载均衡 ↔ 指定账号」点击即生效。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn switch_gateway_mode(mode: String, pinned_uid: Option<String>) -> Result<Value, String> {
+    let mode = wb_switch_core::modules::gateway::GatewayMode::from_str(&mode);
+    let result = wb_switch_core::modules::gateway::switch_mode(mode, pinned_uid).await;
+    if result.get("ok").and_then(Value::as_bool) == Some(false) {
+        let msg = result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("切换模式失败")
+            .to_string();
+        return Err(msg);
+    }
+    Ok(result)
+}
+
 /// 启动网关；传 port 时先保存再启动（前端「选端口 → 启动」一步完成）。
 #[tauri::command]
 pub async fn start_gateway(port: Option<u16>) -> Result<Value, String> {
