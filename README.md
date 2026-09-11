@@ -281,7 +281,7 @@
 |---|---|
 | `WorkBuddy_Switch_Gateway_<版本>_x64-setup.exe` | 安装向导，自动创建开始菜单与卸载项 |
 | `WorkBuddy_Switch_Gateway_<版本>_x64_en-US.msi` | MSI 包，适合批量部署 |
-| `WorkBuddy_Switch_Gateway_<版本>_免安装版.zip` | 解压即用，不写入注册表 |
+| `WorkBuddy_Switch_Gateway_<版本>_portable.zip` | 免安装版，解压即用，不写入注册表 |
 
 ### 安装方式二：免安装
 
