@@ -19,7 +19,7 @@ fn candidate_paths() -> Vec<PathBuf> {
         }
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let name = if cfg!(windows) { "gateway.exe" } else { "gateway" };
+    let name = "gateway.exe";
     out.push(manifest.join("embedded").join(name));
     // 仓库根 dist/（crates/wb-switch-core → ../..）
     if let Some(root) = manifest.parent().and_then(Path::parent) {

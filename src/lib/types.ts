@@ -1,11 +1,14 @@
 // 与 Rust 后端命令返回结构对齐的类型定义（对照 server.py 各 API 响应）
 
+/** 账号区域键；与后端 `Region::key()` 对齐。 */
+export type AccountRegionKey = "cn" | "intl";
+
 export interface AccountMeta {
   id: string;
   /** 服务区域展示名（"国服" / "国际版"），由 domain 后缀推导。 */
   region?: string;
   /** 区域键（"cn" / "intl"），便于样式与筛选。 */
-  regionKey?: "cn" | "intl";
+  regionKey?: AccountRegionKey;
   uid: string | null;
   email: string | null;
   nickname: string | null;
@@ -34,6 +37,8 @@ export interface OAuthStartResult {
   loginId: string;
   verificationUri: string;
   expiresIn: number;
+  /** 本次登录会话所属区域；由后端回显，缺省视为国服。 */
+  region?: AccountRegionKey;
 }
 
 export interface OAuthPollResult {
@@ -350,7 +355,7 @@ export interface TokenStatistics { generatedAt: number; rangeDays?: number | nul
 
 export interface CodeBuddyCliStatus {
   configured: boolean;
-  authMode?: "settings-env" | "api-key-helper";
+  authMode?: "settings-env";
   environmentOverride?: boolean;
   settingsPresent: boolean;
   helperPresent: boolean;
@@ -370,7 +375,7 @@ export interface CodeBuddyCliSwitchResult {
   configured: boolean;
   synced: boolean;
   verified?: boolean;
-  authMode?: "settings-env" | "api-key-helper";
+  authMode?: "settings-env";
   activeIndex?: number;
   activeAccountId?: string;
   source?: string;
@@ -385,7 +390,7 @@ export interface CodeBuddyCliInstallResult {
   helperPresent: boolean;
   helperSupportsAccountIds: boolean;
   verified?: boolean;
-  authMode?: "settings-env" | "api-key-helper";
+  authMode?: "settings-env";
   message?: string;
   error?: string;
 }

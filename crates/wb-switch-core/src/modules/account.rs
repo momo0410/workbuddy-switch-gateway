@@ -115,14 +115,28 @@ fn identity_email(account: &Value) -> Option<String> {
     Some(email.to_ascii_lowercase())
 }
 
+/// 两条记录是否属于同一服务区域。
+///
+/// 国服与国际版的 uid / 邮箱是**相互独立的命名空间**，同一串 uid 或同一个邮箱
+/// 在两个区域可以同时存在（实测本机国服与国际版各自登录、uid 互不相干）。
+/// 因此身份匹配必须带上区域，否则新采集的国际版账号会直接顶掉同 uid 的国服账号。
+/// domain 缺失按国服处理，与 `Region::from_domain` 的历史默认一致。
+fn same_region(a: &Value, b: &Value) -> bool {
+    crate::modules::config::Region::of(a) == crate::modules::config::Region::of(b)
+}
+
 /// 按稳定身份将采集结果合并到账号列表，并返回最终持久化的账号。
 ///
 /// 非空 UID 始终优先；仅当新账号没有 UID 时，才使用真实邮箱兜底。
 /// 命中已有身份时保留本地 id，避免调用方持有的账号引用失效。
+/// 两个区域各自独立匹配，跨区域永不合并。
 pub fn upsert_collected_account(accounts: &mut Vec<Value>, mut collected: Value) -> Value {
     let collected_uid = get_str(&collected, "uid");
     let collected_email = identity_email(&collected);
     let matches_identity = |existing: &Value| {
+        if !same_region(existing, &collected) {
+            return false;
+        }
         if let Some(uid) = collected_uid.as_deref() {
             return get_str(existing, "uid").as_deref() == Some(uid);
         }
@@ -272,6 +286,84 @@ mod tests {
             "access_token": format!("token-{id}"),
             "createdAt": 1,
         })
+    }
+
+    /// 带区域的账号记录；uid 在两个区域**可以相同**（实测国际版与国服
+    /// 各有一套独立 uid 空间，但契约上不保证互不相同）。
+    fn regional_account(id: &str, uid: &str, domain: &str) -> Value {
+        json!({
+            "id": id,
+            "uid": uid,
+            "domain": domain,
+            "nickname": id,
+            "access_token": format!("token-{id}"),
+            "createdAt": 1,
+        })
+    }
+
+    #[test]
+    fn same_uid_in_different_regions_is_retained() {
+        let mut accounts = vec![regional_account("cn", "shared-uid", "www.workbuddy.cn")];
+        let saved = upsert_collected_account(
+            &mut accounts,
+            regional_account("intl", "shared-uid", "www.workbuddy.ai"),
+        );
+
+        assert_eq!(accounts.len(), 2, "跨区域同 uid 不得互相覆盖");
+        assert_eq!(saved["id"], "intl");
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a["id"] == "cn")
+                .map(|a| a["domain"].clone()),
+            Some(json!("www.workbuddy.cn"))
+        );
+    }
+
+    #[test]
+    fn same_uid_same_region_still_refreshes_in_place() {
+        let mut accounts = vec![regional_account("stable", "uid-1", "www.workbuddy.ai")];
+        let saved = upsert_collected_account(
+            &mut accounts,
+            regional_account("generated", "uid-1", "www.workbuddy.ai"),
+        );
+
+        assert_eq!(accounts.len(), 1, "同区域同 uid 仍应原地刷新");
+        assert_eq!(saved["id"], "stable");
+    }
+
+    #[test]
+    fn region_identity_ignores_domain_case_and_missing_domain_is_cn() {
+        let mut accounts = vec![regional_account("upper", "uid-1", "WWW.WorkBuddy.AI")];
+        upsert_collected_account(
+            &mut accounts,
+            regional_account("lower", "uid-1", "www.workbuddy.ai"),
+        );
+        assert_eq!(accounts.len(), 1, "domain 比较应忽略大小写");
+
+        // domain 缺失按国服处理：老记录（无 domain）与新采到的国服账号应合并
+        let mut legacy = vec![account("legacy", Some("uid-2"), "旧", None)];
+        upsert_collected_account(
+            &mut legacy,
+            regional_account("cn-new", "uid-2", "www.workbuddy.cn"),
+        );
+        assert_eq!(legacy.len(), 1, "缺 domain 的历史记录按国服合并");
+    }
+
+    #[test]
+    fn email_fallback_also_respects_region() {
+        let mut accounts = vec![json!({
+            "id": "cn", "uid": null, "domain": "www.workbuddy.cn",
+            "email": "shared@example.com", "access_token": "t",
+        })];
+        upsert_collected_account(
+            &mut accounts,
+            json!({
+                "id": "intl", "uid": null, "domain": "www.workbuddy.ai",
+                "email": "shared@example.com", "access_token": "t2",
+            }),
+        );
+        assert_eq!(accounts.len(), 2, "跨区域同邮箱不得合并");
     }
 
     #[test]

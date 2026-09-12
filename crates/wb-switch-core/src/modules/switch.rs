@@ -32,7 +32,10 @@ pub fn switch_account(
     progress("开始切换账号…");
     let acc =
         account::find_account(account_id).ok_or_else(|| format!("账号不存在: {account_id}"))?;
-    let backup = auth_file::backup_auth_file();
+    // 区域决定认证文件：国际版 workbuddy-desktop-ai.info / 国服 workbuddy-desktop.info。
+    // 备份与写入都必须走目标账号自己的区域，否则切国际版会写进国服文件。
+    let region = crate::modules::config::Region::of(&acc);
+    let backup = auth_file::backup_auth_file_for(region);
 
     let mut copy_report: Option<Value> = None;
     let mut session_report: Option<Value> = None;

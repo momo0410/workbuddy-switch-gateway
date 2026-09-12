@@ -391,12 +391,12 @@ mod tests {
 
     #[test]
     fn db_paths_point_to_home() {
-        assert!(workbuddy_db_path()
-            .to_string_lossy()
-            .ends_with(".workbuddy/workbuddy.db"));
-        assert!(edge_sync_db_path()
-            .to_string_lossy()
-            .ends_with("edge-sync-mapping-v2.db"));
+        // 按路径组件比较，避免写死分隔符（Windows 用 `\`）。
+        assert!(workbuddy_db_path().ends_with(Path::new(".workbuddy").join("workbuddy.db")));
+        assert_eq!(
+            edge_sync_db_path().file_name().and_then(|n| n.to_str()),
+            Some("edge-sync-mapping-v2.db")
+        );
     }
 
     fn temp_db(name: &str) -> PathBuf {
@@ -535,12 +535,11 @@ mod tests {
 
     #[test]
     fn claw_workspace_detected_by_folder_name() {
-        assert!(is_claw_workspace("/Users/apple/WorkBuddy/Claw"));
-        assert!(is_claw_workspace("/Users/apple/WorkBuddy/claw/"));
+        // 反斜杠与正斜杠都要识别（cwd 可能来自不同来源）。
         assert!(is_claw_workspace(r"C:\Users\me\WorkBuddy\Claw"));
-        assert!(!is_claw_workspace("/Users/apple/WorkBuddy/ClawBot"));
-        assert!(!is_claw_workspace(
-            "/Users/apple/Documents/AI-PROJECT/LetterTotTown"
-        ));
+        assert!(is_claw_workspace("C:/Users/me/WorkBuddy/claw/"));
+        assert!(is_claw_workspace(r"D:\WorkBuddy\CLaw"));
+        assert!(!is_claw_workspace(r"C:\Users\me\WorkBuddy\ClawBot"));
+        assert!(!is_claw_workspace(r"D:\Documents\AI-PROJECT\LetterTotTown"));
     }
 }

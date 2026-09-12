@@ -116,15 +116,13 @@ pub async fn refresh_account_token(mut account: Value) -> Value {
     map.remove("needs_relogin");
     map.remove("needs_relogin_reason");
     let _ = upsert_account(&account);
-    // Windows 不执行 apiKeyHelper；当前 CLI 账号刷新后同步 settings env。
+    // 当前 CLI 账号刷新后同步 settings env。
     // 同步失败不阻断 WorkBuddy 保活；状态接口会根据 settings 与账号库是否
     // 一致显示“待同步”，避免把认证配置错误混入账号数据。
-    if cfg!(windows) {
-        let _ = crate::modules::codebuddy_cli::sync_windows_env_for_account(
-            &account,
-            previous_access_token.as_deref(),
-        );
-    }
+    let _ = crate::modules::codebuddy_cli::sync_windows_env_for_account(
+        &account,
+        previous_access_token.as_deref(),
+    );
     account
 }
 

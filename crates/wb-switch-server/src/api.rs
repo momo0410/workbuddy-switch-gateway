@@ -3,12 +3,12 @@
 //! 路由设计对应 Python 版 server.py 与桌面端 commands.rs。仅绑定 127.0.0.1，
 //! token 不出本机。
 
+use std::collections::HashMap;
 use std::sync::Mutex;
-#[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::RawQuery;
+use axum::extract::{Query, RawQuery};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -23,26 +23,18 @@ use wb_switch_core::modules::{
 
 /// WorkBuddy 运行状态缓存：Windows 上检测要跑 tasklist（慢），缓存几秒避免
 /// 前端切 tab 频繁触发命令行导致卡顿/闪窗。
-#[cfg(target_os = "windows")]
 static RUNNING_CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 
 fn cached_workbuddy_running() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cache = RUNNING_CACHE.lock().unwrap();
-        if let Some((t, v)) = cache.as_ref() {
-            if t.elapsed() < Duration::from_secs(3) {
-                return *v;
-            }
+    let mut cache = RUNNING_CACHE.lock().unwrap();
+    if let Some((t, v)) = cache.as_ref() {
+        if t.elapsed() < Duration::from_secs(3) {
+            return *v;
         }
-        let v = process::is_workbuddy_running();
-        *cache = Some((Instant::now(), v));
-        v
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        process::is_workbuddy_running()
-    }
+    let v = process::is_workbuddy_running();
+    *cache = Some((Instant::now(), v));
+    v
 }
 
 #[derive(RustEmbed)]
@@ -311,8 +303,22 @@ async fn api_import(Json(body): Json<Value>) -> Response {
 // OAuth 登录
 // ---------------------------------------------------------------------------
 
-async fn api_oauth_start() -> Response {
-    match oauth::oauth_start().await {
+/// `region` 放在 query 里，缺省国服；body 可选，避免老前端（无 body）被拒。
+async fn api_oauth_start(
+    Query(params): Query<HashMap<String, String>>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let from_body = body
+        .as_ref()
+        .and_then(|Json(v)| v.get("region"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let key = if from_body.is_empty() {
+        params.get("region").map(String::as_str).unwrap_or("")
+    } else {
+        from_body
+    };
+    match oauth::oauth_start(wb_switch_core::modules::config::Region::from_key(key)).await {
         Ok(v) => json_ok(v),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
     }

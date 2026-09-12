@@ -15,6 +15,7 @@ import type {
   CreditExpiry,
   CreditStatistics,
   TokenStatistics,
+  AccountRegionKey,
   CopyResult,
   GatewayConfig,
   GatewayConfigResult,
@@ -244,8 +245,14 @@ export function deleteAccount(accountId: string): Promise<{ ok: boolean }> {
   return call("delete_account", { accountId });
 }
 
-export function oauthStart(): Promise<OAuthStartResult> {
-  return call("oauth_start");
+/**
+ * 发起 OAuth 登录（国服扫码 / 国际版三方授权）。
+ *
+ * `region` 决定取 state 的域名与平台标识（国服 `workbuddy` / 国际版
+ * `workbuddy-ai`）；缺省国服，与旧调用兼容。
+ */
+export function oauthStart(region: AccountRegionKey = "cn"): Promise<OAuthStartResult> {
+  return call("oauth_start", { region });
 }
 
 export function oauthStatus(loginId: string): Promise<OAuthPollResult> {

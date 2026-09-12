@@ -14,12 +14,7 @@ use crate::modules::config::{atomic_write, backup_dir, now_ms, utc_iso};
 /// 认证文件所在目录（国服与国际版共用同一目录）。
 fn auth_dir() -> PathBuf {
     let home = crate::modules::config::home_dir();
-    #[cfg(target_os = "macos")]
-    return home.join("Library/Application Support/CodeBuddyExtension/Data/Public/auth");
-    #[cfg(target_os = "windows")]
-    return home.join("AppData/Local/CodeBuddyExtension/Data/Public/auth");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    return home.join(".local/share/CodeBuddyExtension/Data/Public/auth");
+    home.join("AppData/Local/CodeBuddyExtension/Data/Public/auth")
 }
 
 /// 指定区域的认证文件名。
@@ -40,6 +35,15 @@ pub fn auth_file_path_for(region: crate::modules::config::Region) -> PathBuf {
     auth_dir().join(auth_file_name_for(region))
 }
 
+/// 账号所属区域的认证文件路径。
+///
+/// 切换必须按**账号自身的区域**选文件：国际版账号写进国服的
+/// `workbuddy-desktop.info` 会让客户端带着错配的身份请求，服务端表现为
+/// 「账号访问受限」。区域由账号 domain 推导（`.ai` → 国际版）。
+pub fn auth_file_path_of(acc: &Value) -> PathBuf {
+    auth_file_path_for(crate::modules::config::Region::of(acc))
+}
+
 /// 默认（国服）认证文件路径。保留原签名以避免影响既有调用点。
 pub fn auth_file_path() -> PathBuf {
     auth_file_path_for(crate::modules::config::Region::Cn)
@@ -47,25 +51,16 @@ pub fn auth_file_path() -> PathBuf {
 
 /// WorkBuddy 应用路径。
 pub fn workbuddy_app_path() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    return crate::modules::process::macos_workbuddy_app_path();
-
-    #[cfg(target_os = "windows")]
-    {
-        // 探测顺序：运行进程 Path → 缓存 → 注册表 → 环境变量/盘符扫描。
-        // 都找不到时返回 LOCALAPPDATA 默认路径，供启动失败文案写出尝试路径。
-        if let Some(exe) = crate::modules::process::windows_workbuddy_exe_path() {
-            return exe;
-        }
-        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        return std::path::Path::new(&local)
-            .join("Programs")
-            .join("WorkBuddy")
-            .join("WorkBuddy.exe");
+    // 探测顺序：运行进程 Path → 缓存 → 注册表 → 环境变量/盘符扫描。
+    // 都找不到时返回 LOCALAPPDATA 默认路径，供启动失败文案写出尝试路径。
+    if let Some(exe) = crate::modules::process::windows_workbuddy_exe_path() {
+        return exe;
     }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    return PathBuf::from("/usr/bin/workbuddy");
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    std::path::Path::new(&local)
+        .join("Programs")
+        .join("WorkBuddy")
+        .join("WorkBuddy.exe")
 }
 
 /// 读取认证文件 JSON；不存在或解析失败返回 None。
@@ -90,15 +85,25 @@ pub fn read_auth_file() -> Option<Value> {
 
 /// 切换前备份当前认证文件，返回备份路径。对照 server.py `backup_auth_file`。
 pub fn backup_auth_file() -> Option<PathBuf> {
-    let path = auth_file_path();
+    backup_auth_file_at(&auth_file_path())
+}
+
+/// 备份指定区域的认证文件（国服 / 国际版各一份，互不覆盖）。
+pub fn backup_auth_file_for(region: crate::modules::config::Region) -> Option<PathBuf> {
+    backup_auth_file_at(&auth_file_path_for(region))
+}
+
+fn backup_auth_file_at(path: &std::path::Path) -> Option<PathBuf> {
     if !path.exists() {
         return None;
     }
     let dir = backup_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let ts = utc_iso();
-    let dest = dir.join(format!("workbuddy-desktop.{ts}.info"));
-    std::fs::copy(&path, &dest).ok()?;
+    // 备份名带上区域，避免国服与国际版备份互相覆盖。
+    let stem = path.file_stem()?.to_string_lossy().to_string();
+    let dest = dir.join(format!("{stem}.{ts}.info"));
+    std::fs::copy(path, &dest).ok()?;
     Some(dest)
 }
 
@@ -209,13 +214,24 @@ pub fn build_auth_obj(acc: &Value) -> Value {
 }
 
 /// 把账号写入官方认证文件（原子写 + 写后校验）。对照 server.py `write_account_to_auth_file`。
+///
+/// **按账号区域写入对应的认证文件**：国际版写 `workbuddy-desktop-ai.info`，
+/// 国服写 `workbuddy-desktop.info`。两者是客户端读取的**不同文件**，写错会
+/// 导致目标区域登录态根本没更新（并让客户端带着另一区域的 token 请求）。
 pub fn write_account_to_auth_file(acc: &Value) -> Result<(), String> {
-    let path = auth_file_path();
+    write_account_to_auth_file_at(&auth_file_path_of(acc), acc)
+}
+
+/// 把账号写入指定路径的认证文件（供区域路由与测试复用）。
+pub fn write_account_to_auth_file_at(path: &std::path::Path, acc: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let existing = read_auth_file().unwrap_or_else(|| json!({}));
+    let existing = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
     eprintln!(
         "[auth] write_account: existing is_object={} allAccounts_len={}",
         existing.is_object(),
@@ -260,7 +276,7 @@ pub fn write_account_to_auth_file(acc: &Value) -> Result<(), String> {
         "allAccounts": &all,
     });
     let content = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
-    if let Err(e) = atomic_write(&path, &content) {
+    if let Err(e) = atomic_write(path, &content) {
         eprintln!("[auth] atomic_write FAILED: {e}");
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             return Err(
@@ -273,7 +289,7 @@ pub fn write_account_to_auth_file(acc: &Value) -> Result<(), String> {
 
     // 写后校验
     let written: Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+        serde_json::from_str(&std::fs::read_to_string(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let written_token = written
         .get("auth")
@@ -417,6 +433,71 @@ mod tests {
         assert_eq!(parse_ts(root["auth"].get("expiresAt")), Some(1791912333558));
         assert_eq!(parse_ts(root["auth"].get("refreshToken")), None);
         assert_eq!(parse_ts(Some(&json!("1786728333"))), Some(1786728333));
+    }
+
+    #[test]
+    fn auth_file_path_of_routes_by_account_region() {
+        use crate::modules::config::Region;
+
+        let cn = json!({"uid": "u-cn", "domain": "www.codebuddy.cn"});
+        let intl = json!({"uid": "u-ai", "domain": "www.workbuddy.ai"});
+        // 缺 domain 的历史账号按国服处理
+        let legacy = json!({"uid": "u-legacy"});
+
+        assert_eq!(
+            auth_file_path_of(&cn).file_name().unwrap(),
+            "workbuddy-desktop.info"
+        );
+        assert_eq!(
+            auth_file_path_of(&intl).file_name().unwrap(),
+            "workbuddy-desktop-ai.info"
+        );
+        assert_eq!(
+            auth_file_path_of(&legacy).file_name().unwrap(),
+            "workbuddy-desktop.info"
+        );
+        // 回归保护：国际版绝不能被路由到国服文件
+        assert_ne!(
+            auth_file_path_of(&intl),
+            auth_file_path_for(Region::Cn),
+            "国际版账号必须写入 workbuddy-desktop-ai.info"
+        );
+    }
+
+    /// 回归保护：国际版账号的写入必须落到 ai 文件，且不污染国服文件。
+    #[test]
+    fn write_routes_intl_account_to_ai_file_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "wb-switch-authfile-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cn_path = dir.join("workbuddy-desktop.info");
+        let ai_path = dir.join("workbuddy-desktop-ai.info");
+
+        std::fs::write(&cn_path, json!({"auth": {"accessToken": "CN-KEEP"}}).to_string())
+            .expect("seed cn file");
+
+        let intl = json!({
+            "id": "a-intl",
+            "uid": "u-ai",
+            "domain": "www.workbuddy.ai",
+            "access_token": "AI-TOKEN",
+            "refresh_token": "AI-REFRESH",
+        });
+        write_account_to_auth_file_at(&ai_path, &intl).expect("write intl");
+
+        // 国际版 token 落在 ai 文件
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&ai_path).unwrap()).unwrap();
+        assert_eq!(written["auth"]["accessToken"], "AI-TOKEN");
+
+        // 国服文件保持原样（未被国际版写入污染）
+        let cn: Value = serde_json::from_str(&std::fs::read_to_string(&cn_path).unwrap()).unwrap();
+        assert_eq!(cn["auth"]["accessToken"], "CN-KEEP");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

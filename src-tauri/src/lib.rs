@@ -121,6 +121,8 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_autostart::init(
+            // 该参数仅在 macOS 生效（走 LaunchAgent）；Windows 上忽略，
+            // 但它是插件 init 的必填参数，故保留。
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![tray::SILENT_STARTUP_ARG]),
         ));

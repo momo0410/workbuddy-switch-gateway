@@ -131,24 +131,14 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
 /// updater manifest 候选 URL（按优先级）。
 ///
 /// 1. 合并后的 `latest.json`（含各平台）；
-/// 2. 当前系统的 `latest-<os>-<arch>.json`；
-/// 3. 兼容旧 Windows 安装包：它们仍请求 `latest-macos-<arch>.json`。
+/// 2. 当前系统的 `latest-<os>-<arch>.json`。
 pub fn updater_manifest_urls(owner: &str, repo: &str, os: &str, arch: &str) -> Vec<String> {
-    let os_slug = match os {
-        "macos" | "darwin" => "macos",
-        other => other,
-    };
     let mut urls = vec![format!(
         "https://github.com/{owner}/{repo}/releases/latest/download/latest.json"
     )];
     urls.push(format!(
-        "https://github.com/{owner}/{repo}/releases/latest/download/latest-{os_slug}-{arch}.json"
+        "https://github.com/{owner}/{repo}/releases/latest/download/latest-{os}-{arch}.json"
     ));
-    if os_slug != "macos" {
-        urls.push(format!(
-            "https://github.com/{owner}/{repo}/releases/latest/download/latest-macos-{arch}.json"
-        ));
-    }
     urls.dedup();
     urls
 }
@@ -329,26 +319,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn updater_manifest_urls_macos_skips_duplicate_fallback() {
-        let urls = updater_manifest_urls("momo0410", "workbuddy-switch-gateway", "macos", "aarch64");
-        assert_eq!(
-            urls,
-            vec![
-                "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest.json",
-                "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest-macos-aarch64.json",
-            ]
-        );
-    }
-
-    #[test]
-    fn updater_manifest_urls_windows_keeps_macos_compat() {
+    fn updater_manifest_urls_lists_merged_then_platform_specific() {
         let urls = updater_manifest_urls("momo0410", "workbuddy-switch-gateway", "windows", "x86_64");
         assert_eq!(
             urls,
             vec![
                 "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest.json",
                 "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest-windows-x86_64.json",
-                "https://github.com/momo0410/workbuddy-switch-gateway/releases/latest/download/latest-macos-x86_64.json",
             ]
         );
     }

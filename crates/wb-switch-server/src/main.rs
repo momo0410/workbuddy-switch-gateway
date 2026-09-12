@@ -150,22 +150,10 @@ async fn serve(args: &[String]) {
 
 fn open_browser(addr: &str) {
     let url = format!("http://{addr}");
-    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("cmd");
     {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW：开浏览器不闪 cmd 窗
     }
-    #[cfg(target_os = "windows")]
-    {
-        let mut c = std::process::Command::new("cmd");
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW：开浏览器不闪 cmd 窗
-        }
-        let _ = c.args(["/C", "start", &url]).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-    }
+    let _ = c.args(["/C", "start", &url]).spawn();
 }

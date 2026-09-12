@@ -48,11 +48,45 @@ impl Region {
         Region::from_domain(account.get("domain").and_then(|v| v.as_str()).unwrap_or(""))
     }
 
+    /// 由界面传入的区域键解析区域；未知值按国服处理（保持历史默认）。
+    pub fn from_key(key: &str) -> Region {
+        if key.trim().eq_ignore_ascii_case("intl") {
+            Region::Intl
+        } else {
+            Region::Cn
+        }
+    }
+
+    /// 界面与命令层使用的区域键。
+    pub fn key(self) -> &'static str {
+        match self {
+            Region::Cn => "cn",
+            Region::Intl => "intl",
+        }
+    }
+
     /// 该区域的 API 基址。
     pub fn api_endpoint(self) -> &'static str {
         match self {
             Region::Cn => WORKBUDDY_API_ENDPOINT,
             Region::Intl => WORKBUDDY_API_ENDPOINT_INTL,
+        }
+    }
+
+    /// OAuth 登录使用的平台标识。
+    ///
+    /// 两个区域签发 state 的是同一套 `/v2/plugin/auth/state`，但平台标识不同：
+    /// 国际版登录页把 `workbuddy-ai` 判定为插件平台（`WORKBUDDYAI`），沿用国服的
+    /// `workbuddy` 会落到 Web 分支，取不到插件 token 缓存。
+    ///
+    /// 实测（2026-09，`platform=workbuddy-ai`）：国际版走 Keycloak realm 的
+    /// Google / GitHub / X 联合登录（该区域**没有扫码**），授权后
+    /// `/v2/plugin/auth/token` 正常返回 accessToken / refreshToken，
+    /// `login/account` 也能取到 uid。
+    pub fn oauth_platform(self) -> &'static str {
+        match self {
+            Region::Cn => WORKBUDDY_PLATFORM,
+            Region::Intl => WORKBUDDY_PLATFORM_INTL,
         }
     }
 
@@ -90,6 +124,13 @@ pub fn account_supported_by_auto_tasks(account: &Value) -> bool {
 
 pub const WORKBUDDY_API_PREFIX: &str = "/v2/plugin";
 pub const WORKBUDDY_PLATFORM: &str = "workbuddy";
+
+/// 国际版平台标识。
+///
+/// 国际版登录页把 `workbuddy-ai` 判定为插件平台（见其前端平台枚举
+/// `WORKBUDDYAI="workbuddy-ai"`），插件 token 缓存接口
+/// `/v2/plugin/auth/token` 在两个区域是同一套。
+pub const WORKBUDDY_PLATFORM_INTL: &str = "workbuddy-ai";
 
 pub const OAUTH_TIMEOUT_SECONDS: i64 = 600;
 
@@ -840,6 +881,38 @@ mod tests {
     }
 
     #[test]
+    fn region_key_round_trips_and_unknown_falls_back_to_cn() {
+        assert_eq!(Region::from_key("intl"), Region::Intl);
+        assert_eq!(Region::from_key("INTL"), Region::Intl);
+        assert_eq!(Region::from_key(" intl "), Region::Intl);
+        assert_eq!(Region::from_key("cn"), Region::Cn);
+        // 空值 / 未知值按国服处理，与 from_domain 的历史默认一致
+        assert_eq!(Region::from_key(""), Region::Cn);
+        assert_eq!(Region::from_key("mars"), Region::Cn);
+        for region in Region::ALL {
+            assert_eq!(Region::from_key(region.key()), region);
+        }
+    }
+
+    #[test]
+    fn oauth_platform_is_region_specific() {
+        // 国际版必须用 workbuddy-ai：用国服的 workbuddy 会在国际版登录页走
+        // Web 分支，扫码后拿不到插件 token
+        assert_eq!(Region::Cn.oauth_platform(), "workbuddy");
+        assert_eq!(Region::Intl.oauth_platform(), "workbuddy-ai");
+        assert_ne!(
+            Region::Cn.oauth_platform(),
+            Region::Intl.oauth_platform()
+        );
+    }
+
+    #[test]
+    fn oauth_endpoint_follows_region() {
+        assert_eq!(Region::Cn.api_endpoint(), "https://www.codebuddy.cn");
+        assert_eq!(Region::Intl.api_endpoint(), "https://www.workbuddy.ai");
+    }
+
+    #[test]
     fn auto_checkin_defaults_enabled_and_preserves_legacy_fields() {
         let cfg = default_checkin_config();
         assert_eq!(cfg.get("enabled").and_then(Value::as_bool), Some(true));
@@ -1049,10 +1122,13 @@ mod tests {
     #[test]
     fn parse_codebuddy_cn_app_cache_json_reads_exe() {
         let path = parse_codebuddy_cn_app_cache_json(
-            r#"{ "exe": "/Applications/CodeBuddy CN.app" }"#,
+            r#"{ "exe": "C:\\Users\\Zhou\\AppData\\Local\\Programs\\CodeBuddy CN\\CodeBuddy CN.exe" }"#,
         )
         .expect("valid cache");
-        assert_eq!(path.to_string_lossy(), "/Applications/CodeBuddy CN.app");
+        assert_eq!(
+            path.to_string_lossy(),
+            r"C:\Users\Zhou\AppData\Local\Programs\CodeBuddy CN\CodeBuddy CN.exe"
+        );
     }
 
     #[test]

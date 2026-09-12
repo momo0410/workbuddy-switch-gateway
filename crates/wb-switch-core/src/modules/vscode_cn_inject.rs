@@ -3,49 +3,21 @@
 //! 把账号会话 JSON 加密写入 `state.vscdb` 的 ItemTable：
 //! `secret://{"extensionId":"tencent-cloud.coding-copilot","key":"planning-genie.new.accessTokencn"}`
 //!
-//! 平台加密模型对齐 Chromium/Electron Safe Storage：
-//! - macOS: Keychain「CodeBuddy CN Safe Storage」→ PBKDF2-SHA1(1003) → AES-128-CBC `v10`
-//! - Windows: Local State `os_crypt.encrypted_key` + DPAPI → AES-256-GCM `v10`
-//! - Linux: secret-tool / peanuts 固定密钥 → AES-128-CBC `v11`/`v10`
+//! 加密模型对齐 Chromium/Electron Safe Storage（Windows）：
+//! Local State `os_crypt.encrypted_key` + DPAPI → AES-256-GCM `v10`
 
 use std::path::{Path, PathBuf};
 
-#[cfg(not(target_os = "windows"))]
-use aes::Aes128;
-#[cfg(target_os = "windows")]
 use aes_gcm::aead::generic_array::GenericArray;
-#[cfg(target_os = "windows")]
 use aes_gcm::aead::{Aead, AeadCore, OsRng};
-#[cfg(target_os = "windows")]
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-#[cfg(target_os = "windows")]
 use base64::{engine::general_purpose, Engine as _};
-#[cfg(not(target_os = "windows"))]
-use cbc::cipher::block_padding::Pkcs7;
-#[cfg(not(target_os = "windows"))]
-use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-#[cfg(not(target_os = "windows"))]
-use pbkdf2::pbkdf2_hmac;
 use rusqlite::Connection;
-#[cfg(not(target_os = "windows"))]
-use sha1::Sha1;
 
-#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
-#[cfg(target_os = "windows")]
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
-#[cfg(not(target_os = "windows"))]
-type Aes128CbcEnc = cbc::Encryptor<Aes128>;
-#[cfg(not(target_os = "windows"))]
-type Aes128CbcDec = cbc::Decryptor<Aes128>;
-
 const V10_PREFIX: &[u8] = b"v10";
-const V11_PREFIX: &[u8] = b"v11";
-#[cfg(not(target_os = "windows"))]
-const CBC_IV: [u8; 16] = [b' '; 16];
-#[cfg(not(target_os = "windows"))]
-const SALT: &[u8] = b"saltysalt";
 
 pub const SECRET_EXTENSION_ID: &str = "tencent-cloud.coding-copilot";
 pub const SECRET_KEY: &str = "planning-genie.new.accessTokencn";
@@ -59,18 +31,7 @@ pub fn secret_storage_item_key() -> String {
 }
 
 pub fn codebuddy_cn_data_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        Some(crate::modules::config::home_dir().join("Library/Application Support/CodeBuddy CN"))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        dirs::data_dir().map(|d| d.join("CodeBuddy CN"))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        dirs::config_dir().map(|d| d.join("CodeBuddy CN"))
-    }
+    dirs::data_dir().map(|d| d.join("CodeBuddy CN"))
 }
 
 pub fn codebuddy_cn_state_db_path() -> Option<PathBuf> {
@@ -135,126 +96,11 @@ fn encode_secret_buffer(encrypted: Vec<u8>) -> Result<String, String> {
 fn detect_prefix(encrypted: &[u8]) -> Option<&'static str> {
     if encrypted.starts_with(V10_PREFIX) {
         Some("v10")
-    } else if encrypted.starts_with(V11_PREFIX) {
-        Some("v11")
     } else {
         None
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn pbkdf2_sha1_key(password: &str, iterations: u32) -> [u8; 16] {
-    let mut key = [0u8; 16];
-    pbkdf2_hmac::<Sha1>(password.as_bytes(), SALT, iterations, &mut key);
-    key
-}
-
-#[cfg(not(target_os = "windows"))]
-fn decrypt_cbc_prefixed(
-    encrypted: &[u8],
-    expected_prefix: &[u8],
-    key: &[u8; 16],
-) -> Result<Vec<u8>, String> {
-    if !encrypted.starts_with(expected_prefix) {
-        return Err(format!(
-            "Unexpected ciphertext prefix: {:?}",
-            &encrypted[..encrypted.len().min(3)]
-        ));
-    }
-    let raw = &encrypted[expected_prefix.len()..];
-    let cipher = Aes128CbcDec::new_from_slices(key, &CBC_IV)
-        .map_err(|e| format!("Failed to init AES-CBC decryptor: {e}"))?;
-    let mut buf = raw.to_vec();
-    let plain = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|e| format!("AES-CBC decryption failed: {e}"))?
-        .to_vec();
-    Ok(plain)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn encrypt_cbc_prefixed(
-    prefix: &[u8],
-    key: &[u8; 16],
-    plaintext: &[u8],
-) -> Result<Vec<u8>, String> {
-    let cipher = Aes128CbcEnc::new_from_slices(key, &CBC_IV)
-        .map_err(|e| format!("Failed to init AES-CBC encryptor: {e}"))?;
-    let mut buf = plaintext.to_vec();
-    let msg_len = buf.len();
-    let pad_len = 16 - (msg_len % 16);
-    buf.resize(msg_len + pad_len, 0);
-    let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, msg_len)
-        .map_err(|e| format!("AES-CBC encryption failed: {e}"))?
-        .to_vec();
-    let mut result = Vec::with_capacity(prefix.len() + ciphertext.len());
-    result.extend_from_slice(prefix);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
-}
-
-/// 运行命令并取 trim 后的 stdout；带超时兜底。
-///
-/// macOS 上 `security find-generic-password` 可能因 Keychain 授权弹窗而长时间
-/// 挂起（甚至无限期等待用户决定），因此不能使用无超时的阻塞式 `.output()`；
-/// 子进程输出也需并发读取（复用 process 模块实现），避免写满管道死锁。
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn run_command_get_trimmed(program: &str, args: &[&str], timeout_secs: u64) -> Option<String> {
-    let output = crate::modules::process::run_cmd_timeout(program, args, timeout_secs)?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn get_macos_safe_storage_password() -> Result<String, String> {
-    // 只查询一次：解密只依赖 password 本身、与 account 属性无关，
-    // 单次查询最多触发一次钥匙串授权弹窗（多候选循环会逐次弹窗）。
-    run_command_get_trimmed(
-        "security",
-        &["find-generic-password", "-w", "-s", "CodeBuddy CN Safe Storage"],
-        10,
-    )
-    .ok_or_else(|| {
-        "无法从 Keychain 读取 CodeBuddy CN Safe Storage 密码。请先手动打开 CodeBuddy CN 并登录一次。"
-            .to_string()
-    })
-}
-
-#[cfg(target_os = "linux")]
-const LINUX_V10_KEY: [u8; 16] = [
-    0xfd, 0x62, 0x1f, 0xe5, 0xa2, 0xb4, 0x02, 0x53, 0x9d, 0xfa, 0x14, 0x7c, 0xa9, 0x27, 0x27, 0x78,
-];
-#[cfg(target_os = "linux")]
-const LINUX_EMPTY_KEY: [u8; 16] = [
-    0xd0, 0xd0, 0xec, 0x9c, 0x7d, 0x77, 0xd4, 0x3a, 0xc5, 0x41, 0x87, 0xfa, 0x48, 0x18, 0xd1, 0x7f,
-];
-
-#[cfg(target_os = "linux")]
-fn get_linux_v11_key() -> Option<[u8; 16]> {
-    for app in [
-        "CodeBuddy CN",
-        "codebuddy cn",
-        "codebuddy-cn",
-        "codebuddycn",
-    ] {
-        if let Some(password) =
-            run_command_get_trimmed("secret-tool", &["lookup", "application", app], 10)
-        {
-            return Some(pbkdf2_sha1_key(&password, 1));
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
 fn get_local_state_path(data_root: &Path) -> Result<PathBuf, String> {
     let path = data_root.join("Local State");
     if path.exists() {
@@ -264,7 +110,6 @@ fn get_local_state_path(data_root: &Path) -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
         let mut data_in = CRYPT_INTEGER_BLOB {
@@ -295,7 +140,6 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn get_windows_encryption_key(data_root: &Path) -> Result<Vec<u8>, String> {
     let local_state = get_local_state_path(data_root)?;
     let text = std::fs::read_to_string(&local_state)
@@ -318,7 +162,6 @@ fn get_windows_encryption_key(data_root: &Path) -> Result<Vec<u8>, String> {
     dpapi_decrypt(&encrypted_key_bytes[5..])
 }
 
-#[cfg(target_os = "windows")]
 fn decrypt_windows_gcm_v10(key: &[u8], encrypted: &[u8]) -> Result<Vec<u8>, String> {
     if encrypted.len() < 31 {
         return Err("ciphertext too short for AES-GCM".to_string());
@@ -338,7 +181,6 @@ fn decrypt_windows_gcm_v10(key: &[u8], encrypted: &[u8]) -> Result<Vec<u8>, Stri
         .map_err(|e| format!("AES-GCM decryption failed: {e}"))
 }
 
-#[cfg(target_os = "windows")]
 fn encrypt_windows_gcm_v10(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -353,46 +195,8 @@ fn encrypt_windows_gcm_v10(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Stri
 }
 
 fn decrypt_secret_payload(encrypted: &[u8], data_root: &Path) -> Result<Vec<u8>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let key = get_windows_encryption_key(data_root)?;
-        return decrypt_windows_gcm_v10(&key, encrypted);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = data_root;
-        let password = get_macos_safe_storage_password()?;
-        let key = pbkdf2_sha1_key(&password, 1003);
-        return decrypt_cbc_prefixed(encrypted, V10_PREFIX, &key);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = data_root;
-        match detect_prefix(encrypted) {
-            Some("v11") => {
-                let key = get_linux_v11_key().ok_or_else(|| {
-                    "无法加载 Linux secret storage key（v11）".to_string()
-                })?;
-                match decrypt_cbc_prefixed(encrypted, V11_PREFIX, &key) {
-                    Ok(value) => Ok(value),
-                    Err(_) => decrypt_cbc_prefixed(encrypted, V11_PREFIX, &LINUX_EMPTY_KEY),
-                }
-            }
-            Some("v10") => match decrypt_cbc_prefixed(encrypted, V10_PREFIX, &LINUX_V10_KEY) {
-                Ok(value) => Ok(value),
-                Err(_) => decrypt_cbc_prefixed(encrypted, V10_PREFIX, &LINUX_EMPTY_KEY),
-            },
-            _ => Err(format!(
-                "Unsupported Linux ciphertext prefix: {:?}",
-                &encrypted[..encrypted.len().min(3)]
-            )),
-        }
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (encrypted, data_root);
-        Err("Unsupported platform".to_string())
-    }
+    let key = get_windows_encryption_key(data_root)?;
+    decrypt_windows_gcm_v10(&key, encrypted)
 }
 
 fn encrypt_secret_payload(
@@ -400,41 +204,9 @@ fn encrypt_secret_payload(
     preferred_prefix: Option<&str>,
     data_root: &Path,
 ) -> Result<Vec<u8>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = preferred_prefix;
-        let key = get_windows_encryption_key(data_root)?;
-        return encrypt_windows_gcm_v10(&key, plaintext);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (preferred_prefix, data_root);
-        let password = get_macos_safe_storage_password()?;
-        let key = pbkdf2_sha1_key(&password, 1003);
-        return encrypt_cbc_prefixed(V10_PREFIX, &key, plaintext);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = data_root;
-        let target_prefix = if let Some(prefix) = preferred_prefix {
-            prefix
-        } else if get_linux_v11_key().is_some() {
-            "v11"
-        } else {
-            "v10"
-        };
-        if target_prefix == "v11" {
-            let key = get_linux_v11_key()
-                .ok_or_else(|| "无法加载 Linux secret storage key（v11）".to_string())?;
-            return encrypt_cbc_prefixed(V11_PREFIX, &key, plaintext);
-        }
-        return encrypt_cbc_prefixed(V10_PREFIX, &LINUX_V10_KEY, plaintext);
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (plaintext, preferred_prefix, data_root);
-        Err("Unsupported platform".to_string())
-    }
+    let _ = preferred_prefix;
+    let key = get_windows_encryption_key(data_root)?;
+    encrypt_windows_gcm_v10(&key, plaintext)
 }
 
 fn decode_secret_storage_value(raw_value: &str, data_root: &Path) -> Result<String, String> {
@@ -574,17 +346,6 @@ mod tests {
         };
         assert!(db.ends_with("state.vscdb"));
         assert!(db.to_string_lossy().contains("globalStorage"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn cbc_roundtrip_with_known_password() {
-        let key = pbkdf2_sha1_key("test-password", 1003);
-        let plain = br#"{"token":"abc","accessToken":"uid+abc"}"#;
-        let encrypted = encrypt_cbc_prefixed(V10_PREFIX, &key, plain).unwrap();
-        assert!(encrypted.starts_with(V10_PREFIX));
-        let decrypted = decrypt_cbc_prefixed(&encrypted, V10_PREFIX, &key).unwrap();
-        assert_eq!(decrypted, plain);
     }
 
     #[test]

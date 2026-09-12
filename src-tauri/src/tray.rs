@@ -1,4 +1,4 @@
-//! Desktop tray: menu-bar icon, dock visibility, lightweight mode, and check-in.
+//! Desktop tray: notification-area icon, lightweight mode, and check-in.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -24,15 +24,12 @@ pub const SILENT_STARTUP_ARG: &str = "--hidden";
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 static CHECKIN_BUSY: AtomicBool = AtomicBool::new(false);
 static TOOLTIP_GENERATION: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
-static DOCK_ICON_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = build_tray_menu(app)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(menu_bar_icon())
-        .icon_as_template(true)
+        .icon(tray_icon())
         .tooltip(DEFAULT_TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -56,7 +53,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
         let _ = window.hide();
-        apply_dock_visible(window.app_handle(), false);
+        apply_taskbar_visible(window.app_handle(), false);
         emit_main_window_visible(window.app_handle(), false);
     }
 }
@@ -75,14 +72,14 @@ pub fn is_silent_startup(args: impl IntoIterator<Item = impl AsRef<str>>) -> boo
 /// show / hide 决策，静默启动不会先闪出主窗口：
 ///
 /// - 普通启动（无 `--hidden`）：走既有 `show_main_window` 路径，
-///   先恢复 Regular / Dock，再 show / unminimize / focus。
-/// - 静默启动（`--hidden`）：窗口保持隐藏，隐藏 Dock / 任务栏入口，
+///   先恢复任务栏入口，再 show / unminimize / focus。
+/// - 静默启动（`--hidden`）：窗口保持隐藏，隐藏任务栏入口，
 ///   只保留托盘；不设置 `LIGHTWEIGHT_MODE`（WebView 仍然存在）。
 ///
 /// 之后从托盘「打开主界面」仍走 `show_main_window`，与隐藏窗口完全一致。
 pub fn setup_startup_visibility<R: Runtime>(app: &AppHandle<R>, silent: bool) {
     if silent {
-        apply_dock_visible(app, false);
+        apply_taskbar_visible(app, false);
         emit_main_window_visible(app, false);
     } else {
         show_main_window(app);
@@ -118,7 +115,7 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         exit_lightweight(app);
         return;
     }
-    apply_dock_visible(app, true);
+    apply_taskbar_visible(app, true);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.unminimize();
@@ -127,116 +124,10 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     emit_main_window_visible(app, true);
 }
 
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows")),
-    allow(unused_variables)
-)]
-fn apply_dock_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::ActivationPolicy;
-        let policy = if visible {
-            ActivationPolicy::Regular
-        } else {
-            ActivationPolicy::Accessory
-        };
-        let _ = app.set_dock_visibility(visible);
-        let _ = app.set_activation_policy(policy);
-        if visible {
-            restore_macos_dock_icon(app);
-        } else {
-            DOCK_ICON_GENERATION.fetch_add(1, Ordering::AcqRel);
-        }
+fn apply_taskbar_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.set_skip_taskbar(!visible);
     }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-            let _ = window.set_skip_taskbar(!visible);
-        }
-    }
-}
-
-/// Re-apply the Dock icon after returning to Regular.
-///
-/// `TransformProcessType` rebuilds the Dock tile from the running executable.
-/// Packaged `.app` binaries have no icon of their own, and `tauri dev` is named
-/// `exec`, so both need an explicit restore. Tauri only sets
-/// `setApplicationIconImage` once on `RunEvent::Ready` (dev only).
-/// `TransformProcessType` is asynchronous, so we also re-apply after a short delay.
-///
-/// Do **not** feed the raw `icon.png` here: it is a full-bleed opaque square.
-/// `setApplicationIconImage` then bypasses the system squircle, which is why the
-/// Dock icon lost rounded corners and changed size after “打开主窗口”.
-#[cfg(target_os = "macos")]
-fn restore_macos_dock_icon<R: Runtime>(app: &AppHandle<R>) {
-    let generation = DOCK_ICON_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    apply_macos_app_icon();
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        if DOCK_ICON_GENERATION.load(Ordering::Acquire) != generation {
-            return;
-        }
-        let _ = app.run_on_main_thread(move || {
-            if DOCK_ICON_GENERATION.load(Ordering::Acquire) == generation {
-                apply_macos_app_icon();
-            }
-        });
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn apply_macos_app_icon() {
-    use objc2::AllocAnyThread;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    // SAFETY: tray / window events and run_on_main_thread all run on the AppKit main thread.
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let app = NSApplication::sharedApplication(mtm);
-
-    if let Some(icon) = macos_bundle_dock_icon() {
-        unsafe { app.setApplicationIconImage(Some(&icon)) };
-        return;
-    }
-
-    // `tauri dev` has no `.app` bundle; keep the PNG fallback so Dock is not "exec".
-    const APP_ICON_PNG: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/icon.png"));
-    let data = NSData::with_bytes(APP_ICON_PNG);
-    let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) else {
-        return;
-    };
-    unsafe { app.setApplicationIconImage(Some(&icon)) };
-}
-
-/// Finder-composited app icon (system squircle already applied).
-#[cfg(target_os = "macos")]
-fn macos_bundle_dock_icon() -> Option<objc2::rc::Retained<objc2_app_kit::NSImage>> {
-    use objc2_app_kit::NSWorkspace;
-    use objc2_foundation::NSString;
-
-    let exe = std::env::current_exe().ok()?;
-    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-    let bundle = app_bundle_path_from_exe(&exe)?;
-    let path = NSString::from_str(&bundle.to_string_lossy());
-    Some(NSWorkspace::sharedWorkspace().iconForFile(&path))
-}
-
-/// `Foo.app/Contents/MacOS/binary` → `Foo.app`.
-#[cfg(any(target_os = "macos", test))]
-fn app_bundle_path_from_exe(exe: &std::path::Path) -> Option<&std::path::Path> {
-    let macos_dir = exe.parent()?;
-    if macos_dir.file_name()?.to_str()? != "MacOS" {
-        return None;
-    }
-    let contents = macos_dir.parent()?;
-    if contents.file_name()?.to_str()? != "Contents" {
-        return None;
-    }
-    let bundle = contents.parent()?;
-    (bundle.extension()?.to_str()? == "app").then_some(bundle)
 }
 
 fn toggle_lightweight<R: Runtime>(app: &AppHandle<R>) {
@@ -255,14 +146,14 @@ fn enter_lightweight<R: Runtime>(app: &AppHandle<R>) {
             return;
         }
     }
-    apply_dock_visible(app, false);
+    apply_taskbar_visible(app, false);
     LIGHTWEIGHT_MODE.store(true, Ordering::Release);
     refresh_tray_menu(app);
 }
 
 fn exit_lightweight<R: Runtime>(app: &AppHandle<R>) {
-    // Regular / dock first so a from_config window is not created while Accessory.
-    apply_dock_visible(app, true);
+    // 先恢复任务栏入口，避免 from_config 创建的窗口处于隐藏状态。
+    apply_taskbar_visible(app, true);
     if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
         let Some(config) = app
             .config()
@@ -272,7 +163,7 @@ fn exit_lightweight<R: Runtime>(app: &AppHandle<R>) {
             .find(|window| window.label == MAIN_WINDOW_LABEL)
             .cloned()
         else {
-            apply_dock_visible(app, false);
+            apply_taskbar_visible(app, false);
             refresh_tray_menu(app);
             return;
         };
@@ -280,13 +171,13 @@ fn exit_lightweight<R: Runtime>(app: &AppHandle<R>) {
             .and_then(|builder| builder.build())
             .is_err()
         {
-            apply_dock_visible(app, false);
+            apply_taskbar_visible(app, false);
             refresh_tray_menu(app);
             return;
         }
     }
     // Window exists now: Windows skip_taskbar was a no-op before recreate.
-    apply_dock_visible(app, true);
+    apply_taskbar_visible(app, true);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.unminimize();
@@ -436,7 +327,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<Menu<R>>
         .build()
 }
 
-fn menu_bar_icon() -> tauri::image::Image<'static> {
+/// 通知区图标：36×36 白色带 alpha 的 RGBA 位图。
+fn tray_icon() -> tauri::image::Image<'static> {
     const ICON: &[u8; 36 * 36 * 4] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/icons/tray-icon-template.rgba"
@@ -473,7 +365,7 @@ fn format_checkin_tooltip(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_checkin_tooltip, is_silent_startup, menu_bar_icon, should_keep_tray_alive};
+    use super::{format_checkin_tooltip, is_silent_startup, should_keep_tray_alive, tray_icon};
     use serde_json::json;
 
     #[test]
@@ -483,8 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_icon_has_transparency_and_antialiasing() {
-        let icon = menu_bar_icon();
+    fn tray_icon_has_transparency_and_antialiasing() {
+        let icon = tray_icon();
         assert_eq!((icon.width(), icon.height()), (36, 36));
         assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
         assert!(icon
@@ -565,30 +457,6 @@ mod tests {
         assert!(!checkin_succeeded(&json!({
             "accounts": [{"result": "success"}, {"result": "error"}]
         })));
-    }
-
-    #[test]
-    fn app_bundle_path_from_packaged_exe() {
-        use std::path::Path;
-        let exe = Path::new("/Applications/workbuddy-switch.app/Contents/MacOS/wb-switch-rust");
-        assert_eq!(
-            super::app_bundle_path_from_exe(exe),
-            Some(Path::new("/Applications/workbuddy-switch.app"))
-        );
-    }
-
-    #[test]
-    fn app_bundle_path_none_outside_app_bundle() {
-        use std::path::Path;
-        assert!(super::app_bundle_path_from_exe(Path::new("/tmp/exec")).is_none());
-        assert!(
-            super::app_bundle_path_from_exe(Path::new("/Users/x/target/debug/wb-switch-rust"))
-                .is_none()
-        );
-        assert!(super::app_bundle_path_from_exe(Path::new(
-            "/Applications/workbuddy-switch.app/Contents/Resources/icon.icns"
-        ))
-        .is_none());
     }
 
     #[test]

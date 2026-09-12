@@ -604,7 +604,6 @@ export default function AccountsPage() {
   const cnIdeCurrentName = codebuddyCnIde?.installed
     ? codebuddyCnIde.activeAccountName || "未检测到"
     : "未安装";
-  const codebuddyUsesSettingsEnv = codebuddyCli?.authMode === "settings-env";
   return (
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6">
@@ -679,7 +678,7 @@ export default function AccountsPage() {
                 className="h-10 bg-primary px-4 text-primary-foreground shadow-sm hover:bg-primary/90"
                 onClick={() => setOauthOpen(true)}
               >
-                <QrCode />OAuth 扫码添加
+                <QrCode />OAuth 登录添加
               </Button>
             </DemoAction>
             <DemoAction>
@@ -712,7 +711,6 @@ export default function AccountsPage() {
 
       {codebuddyCli &&
         (!codebuddyCli.configured ||
-          (!codebuddyUsesSettingsEnv && !codebuddyCli.helperSupportsAccountIds) ||
           codebuddyCli.migrationRequired ||
           codebuddyCli.syncPending) && (
         <Alert className="mb-4">
@@ -720,19 +718,13 @@ export default function AccountsPage() {
           <AlertTitle>CodeBuddy CLI 接入</AlertTitle>
           <AlertDescription>
             <p>
-              {codebuddyUsesSettingsEnv
-                ? codebuddyCli.environmentOverride
-                  ? "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 CodeBuddy CLI。"
-                  : codebuddyCli.syncPending
-                    ? "Windows CLI 认证配置与当前账号 Token 已脱节。点击更新认证后写入最新 Token；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
-                    : codebuddyCli.migrationRequired
-                      ? "检测到旧版 Windows helper 配置。接入后会改用 settings.json 的 env.CODEBUDDY_AUTH_TOKEN，不再执行 helper。"
-                      : "Windows 使用 CodeBuddy settings.json 中的认证 Token；切换或保活刷新后会自动更新。当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
-                : codebuddyCli.migrationRequired
-                  ? "检测到旧版 helper，请先升级；升级前不会将 CLI 切换显示为已验证。"
-                  : codebuddyCli.configured
-                    ? "当前 helper 仍按旧索引读取账号；升级后将按账号 ID 独立切换，账号增删也不会错位。"
-                    : "WorkBuddy 账号与积分功能可正常使用；如需从这里切换 CodeBuddy CLI 账号，点击下方按钮一键接入。"}
+              {codebuddyCli.environmentOverride
+                ? "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 CodeBuddy CLI。"
+                : codebuddyCli.syncPending
+                  ? "CLI 认证配置与当前账号 Token 已脱节。点击更新认证后写入最新 Token；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
+                  : codebuddyCli.migrationRequired
+                    ? "检测到旧版 helper 配置。接入后会改用 settings.json 的 env.CODEBUDDY_AUTH_TOKEN，不再执行 helper。"
+                    : "使用 CodeBuddy settings.json 中的认证 Token；切换或保活刷新后会自动更新。当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"}
             </p>
             <DemoAction>
               <Button
@@ -743,9 +735,7 @@ export default function AccountsPage() {
                 disabled={installingCodebuddyCli}
               >
                 {installingCodebuddyCli && <Loader2 className="animate-spin" />}
-                {codebuddyUsesSettingsEnv
-                  ? codebuddyCli.configured ? "更新 CLI 认证" : "接入 CLI"
-                  : codebuddyCli.configured || codebuddyCli.migrationRequired ? "升级 CLI helper" : "接入 CLI"}
+                {codebuddyCli.configured ? "更新 CLI 认证" : "接入 CLI"}
               </Button>
             </DemoAction>
           </AlertDescription>
@@ -863,7 +853,7 @@ export default function AccountsPage() {
           </div>
         ) : accounts.length === 0 ? (
           <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-            暂无账号。点击上方按钮导入本机账号或扫码登录。
+            暂无账号。点击上方按钮导入本机账号或 OAuth 登录。
           </div>
         ) : (
           <div className={cn("grid min-w-0 items-start gap-5", compact ? "grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))]" : "grid-cols-[repeat(auto-fit,minmax(min(100%,340px),1fr))]")}>
@@ -925,34 +915,20 @@ export default function AccountsPage() {
         }}
       />
 
-      {/* 接入/升级 CLI 认证确认（桌面 App 不支持 window.confirm） */}
+      {/* 接入/更新 CLI 认证确认（桌面 App 不支持 window.confirm） */}
       <Dialog open={installConfirmOpen} onOpenChange={setInstallConfirmOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {codebuddyUsesSettingsEnv
-                ? "更新 CodeBuddy CLI 认证"
-                : codebuddyCli?.configured || codebuddyCli?.migrationRequired
-                  ? "升级 CodeBuddy CLI helper"
-                  : "接入 CodeBuddy CLI"}
+              {codebuddyCli?.configured ? "更新 CodeBuddy CLI 认证" : "接入 CodeBuddy CLI"}
             </DialogTitle>
             <DialogDescription>
-              {codebuddyUsesSettingsEnv ? (
-                <>
-                  将把当前账号的认证 Token 写入
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 <code className="mx-1 rounded bg-muted px-1">env.CODEBUDDY_AUTH_TOKEN</code>。
-                  其他配置会保留；更新只影响后续加载的会话，当前运行会话不会切换。是否继续？
-                </>
-              ) : (
-                <>
-                  {codebuddyCli?.configured || codebuddyCli?.migrationRequired ? "升级" : "接入"}会自动写入
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy-rotate/helper.cjs</code>
-                  并更新
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 apiKeyHelper 配置，是否继续？
-                </>
-              )}
+              <>
+                将把当前账号的认证 Token 写入
+                <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
+                的 <code className="mx-1 rounded bg-muted px-1">env.CODEBUDDY_AUTH_TOKEN</code>。
+                其他配置会保留；更新只影响后续加载的会话，当前运行会话不会切换。是否继续？
+              </>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

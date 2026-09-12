@@ -62,11 +62,7 @@ pub fn gateway_state_file() -> PathBuf {
 
 /// 可执行文件名。
 fn gateway_exe_name() -> &'static str {
-    if cfg!(windows) {
-        "gateway.exe"
-    } else {
-        "gateway"
-    }
+    "gateway.exe"
 }
 
 /// 定位网关可执行文件。
@@ -863,7 +859,6 @@ pub async fn start_gateway(cfg: &Value) -> Result<Value, String> {
         .current_dir(gateway_dir())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -932,19 +927,12 @@ pub fn stop_gateway() -> Value {
     let stopped = match slot.as_mut() {
         Some(child) => {
             let pid = child.id();
-            #[cfg(windows)]
-            {
-                // Windows 需连同子进程树一起结束
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = child.kill();
-            }
+            // Windows 需连同子进程树一起结束
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
             let _ = child.wait();
             true
         }

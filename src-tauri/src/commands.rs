@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use tauri::Emitter;
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, credit_usage, credits, export_import, oauth,
+    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, config, credit_usage, credits, export_import, oauth,
     process, refresh, rotate, session, switch, token_stats, travel, update,
 };
 
@@ -98,7 +98,7 @@ pub async fn switch_codebuddy_cli_account(account_id: String) -> Result<Value, S
 
 /// GET /api/codebuddy-cn-ide/status —— CodeBuddy IDE 安装/运行/当前账号。
 ///
-/// async + spawn_blocking：状态检测会跑 ps / mdfind 等子进程（mdfind 可能
+/// async + spawn_blocking：状态检测会跑 tasklist / PowerShell 等子进程（可能
 /// 耗时数秒），账号页每次挂载都会刷新，若在主线程执行会造成页面卡顿。
 #[tauri::command]
 pub async fn get_codebuddy_cn_ide_status() -> Result<Value, String> {
@@ -151,9 +151,13 @@ pub fn delete_account(account_id: String) -> Result<Value, String> {
 }
 
 /// POST /api/oauth/start —— 发起 OAuth 扫码登录。
+///
+/// `region` 为 `"cn"`（缺省）或 `"intl"`：决定取 state 的域名与平台标识
+/// （国服 `workbuddy` / 国际版 `workbuddy-ai`）。
 #[tauri::command]
-pub async fn oauth_start() -> Result<Value, String> {
-    oauth::oauth_start().await
+pub async fn oauth_start(region: Option<String>) -> Result<Value, String> {
+    let region = config::Region::from_key(region.as_deref().unwrap_or(""));
+    oauth::oauth_start(region).await
 }
 
 /// GET /api/oauth/status —— 轮询采集结果。

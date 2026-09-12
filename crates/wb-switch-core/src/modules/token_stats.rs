@@ -1164,11 +1164,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_genie_workspace_recovers_unix_project_path() {
+    fn decode_genie_workspace_recovers_windows_project_path() {
         assert_eq!(
-            decode_genie_workspace("L1VzZXJzL2FwcGxlL0RvY3VtZW50cy9Qcm9qZWN0L215LWFnZW50")
+            decode_genie_workspace("QzpcVXNlcnNcWmhvdVxEb2N1bWVudHNcUHJvamVjdFxteS1hZ2VudA==")
                 .as_deref(),
-            Some("/Users/apple/Documents/Project/my-agent")
+            Some(r"C:\Users\Zhou\Documents\Project\my-agent")
         );
     }
 

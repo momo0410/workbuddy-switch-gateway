@@ -417,12 +417,17 @@ mod tests {
             validate_export_path("relative/out.json").is_err(),
             "必须绝对路径"
         );
-        assert!(validate_export_path("/tmp/out.txt").is_err(), "必须 .json");
+        // 用系统临时目录构造绝对路径，避免写死 POSIX 的 /tmp。
+        let tmp = std::env::temp_dir();
         assert!(
-            validate_export_path("/tmp/out.JSON").is_ok(),
+            validate_export_path(&tmp.join("out.txt").to_string_lossy()).is_err(),
+            "必须 .json"
+        );
+        assert!(
+            validate_export_path(&tmp.join("out.JSON").to_string_lossy()).is_ok(),
             "扩展名不区分大小写"
         );
-        assert!(validate_export_path("/tmp/out.json").is_ok());
+        assert!(validate_export_path(&tmp.join("out.json").to_string_lossy()).is_ok());
     }
 
     #[test]

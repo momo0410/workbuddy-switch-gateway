@@ -58,8 +58,7 @@ pub fn materialize() -> Result<PathBuf, String> {
     let dir = embed_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
-    let name = if cfg!(windows) { "gateway" } else { "gateway" };
-    let target = dir.join(format!("{name}-{}.exe", fingerprint(gz)));
+    let target = dir.join(format!("gateway-{}.exe", fingerprint(gz)));
 
     // 已落地且大小合理 → 直接复用
     if let Ok(meta) = std::fs::metadata(&target) {
@@ -82,12 +81,6 @@ pub fn materialize() -> Result<PathBuf, String> {
     std::fs::write(&tmp, &buf).map_err(|e| format!("写入网关失败: {e}"))?;
     let _ = std::fs::remove_file(&target);
     std::fs::rename(&tmp, &target).map_err(|e| format!("替换网关失败: {e}"))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
-    }
 
     Ok(target)
 }

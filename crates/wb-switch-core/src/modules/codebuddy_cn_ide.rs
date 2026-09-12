@@ -1,7 +1,7 @@
 //! CodeBuddy CN IDE（桌面客户端）账号切换。
 //!
 //! 复用 WorkBuddy 账号库中的 CN token（www.codebuddy.cn），写入
-//! `~/Library/Application Support/CodeBuddy CN/.../state.vscdb` 的 Safe Storage
+//! `%APPDATA%\CodeBuddy CN\User\globalStorage\state.vscdb` 的 Safe Storage
 //! secret，并可选重启 CodeBuddy CN。与 CodeBuddy CLI（`~/.codebuddy`）完全独立。
 
 use serde_json::{json, Value};
@@ -13,10 +13,8 @@ use crate::modules::config::{
     atomic_write, clear_codebuddy_cn_app_cache, load_codebuddy_cn_app_cache, now_ms,
     save_codebuddy_cn_app_cache, store_dir,
 };
-#[cfg(target_os = "macos")]
-use crate::modules::config::home_dir;
 // 复用 process 模块带并发管道读取的正确实现；本地轮询版会在子进程输出
-// 超过 64KB（如 `ps -axo pid=,args=`）时因管道写满而死锁到超时。
+// 超过 64KB（如 PowerShell `Get-CimInstance Win32_Process`）时因管道写满而死锁到超时。
 use crate::modules::process;
 use crate::modules::process::run_cmd_timeout as run_cmd;
 use crate::modules::vscode_cn_inject::{
@@ -25,10 +23,6 @@ use crate::modules::vscode_cn_inject::{
 };
 
 const STATE_FILE: &str = "codebuddy_cn_ide.json";
-#[cfg(target_os = "macos")]
-const MACOS_BUNDLE_ID: &str = "com.tencent.codebuddycn";
-#[cfg(target_os = "macos")]
-const MACOS_APP_NAME: &str = "CodeBuddy CN.app";
 
 fn state_path() -> PathBuf {
     store_dir().join(STATE_FILE)
@@ -204,7 +198,6 @@ fn windows_image_stem(name: &str) -> &str {
 }
 
 /// 精确映像名：`CodeBuddy CN`（忽略 .exe / 路径 / 大小写）。
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 fn is_codebuddy_cn_image_name(name: &str) -> bool {
     windows_image_stem(name).eq_ignore_ascii_case("CodeBuddy CN")
 }
@@ -221,7 +214,6 @@ fn path_contains_codebuddy_cn_dir(path: &str) -> bool {
 
 /// Windows CN 可执行文件：`CodeBuddy CN.exe`，或位于 `CodeBuddy CN\` 目录下的 `CodeBuddy.exe`。
 /// 国际版 `%LOCALAPPDATA%\Programs\CodeBuddy\CodeBuddy.exe` 不算。
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 fn is_codebuddy_cn_windows_exe(path: &str) -> bool {
     if is_codebuddy_cn_image_name(path) {
         return true;
@@ -236,85 +228,6 @@ fn persist_cn_app_cache(path: &Path) {
     let _ = save_codebuddy_cn_app_cache(path);
 }
 
-#[cfg(target_os = "macos")]
-fn macos_cn_app_candidates(home: &Path) -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/Applications").join(MACOS_APP_NAME),
-        home.join("Applications").join(MACOS_APP_NAME),
-    ]
-}
-
-#[cfg(target_os = "macos")]
-fn macos_cn_main_patterns(resolved_app: Option<&Path>) -> Vec<String> {
-    match resolved_app {
-        Some(app) => vec![format!("{}/Contents/MacOS", app.display())],
-        None => vec!["CodeBuddy CN.app/Contents/MacOS".to_string()],
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_cn_bundle_patterns(resolved_app: Option<&Path>) -> Vec<String> {
-    match resolved_app {
-        Some(app) => vec![app.display().to_string()],
-        None => vec!["CodeBuddy CN.app".to_string()],
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_cn_running_app_path() -> Option<PathBuf> {
-    let patterns = macos_cn_main_patterns(None);
-    for (_pid, args) in process::macos_rows_by_patterns(&patterns) {
-        if let Some(p) = process::extract_app_bundle_from_args(&args) {
-            if process::is_app_bundle(&p) {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn macos_cn_mdfind_app_path() -> Option<PathBuf> {
-    let query = format!("kMDItemCFBundleIdentifier == '{MACOS_BUNDLE_ID}'c");
-    let out = run_cmd("mdfind", &[query.as_str()], 5)?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_cn_app_path_resolved() -> Option<PathBuf> {
-    if let Some(p) = macos_cn_running_app_path() {
-        persist_cn_app_cache(&p);
-        return Some(p);
-    }
-    if let Some(cached) = load_codebuddy_cn_app_cache() {
-        if process::is_app_bundle(&cached) {
-            return Some(cached);
-        }
-        clear_codebuddy_cn_app_cache();
-    }
-    for p in macos_cn_app_candidates(&home_dir()) {
-        if process::is_app_bundle(&p) {
-            persist_cn_app_cache(&p);
-            return Some(p);
-        }
-    }
-    if let Some(p) = macos_cn_mdfind_app_path() {
-        if process::is_app_bundle(&p) {
-            persist_cn_app_cache(&p);
-            return Some(p);
-        }
-    }
-    None
-}
-
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 fn windows_cn_fallback_exe_candidates(
     local_appdata: Option<&str>,
     program_files: Option<&str>,
@@ -368,7 +281,6 @@ fn windows_cn_fallback_exe_candidates(
     out
 }
 
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 fn keep_windows_cn_row(row: &process::WindowsProcessRow) -> bool {
     let path_s = row
         .exe_path
@@ -387,19 +299,16 @@ fn keep_windows_cn_row(row: &process::WindowsProcessRow) -> bool {
         || (!path_s.is_empty() && is_codebuddy_cn_windows_exe(&path_s))
 }
 
-#[cfg(target_os = "windows")]
 fn is_existing_cn_exe(path: &Path) -> bool {
     path.is_file() && is_codebuddy_cn_windows_exe(&path.to_string_lossy())
 }
 
-#[cfg(target_os = "windows")]
 fn windows_cn_cim_process_script() -> &'static str {
     "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | \
          Where-Object { $_.Name -eq 'CodeBuddy CN.exe' -or $_.Name -eq 'CodeBuddy.exe' } | \
          ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.Name, $_.ExecutablePath }"
 }
 
-#[cfg(target_os = "windows")]
 fn windows_cn_process_rows() -> Vec<process::WindowsProcessRow> {
     let self_pid = std::process::id();
     if let Some(stdout) = process::ps_output(windows_cn_cim_process_script(), 5) {
@@ -419,7 +328,6 @@ fn windows_cn_process_rows() -> Vec<process::WindowsProcessRow> {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
 fn windows_cn_running_exe() -> Option<PathBuf> {
     let stdout = process::ps_output(windows_cn_cim_process_script(), 5)?;
     for row in process::parse_windows_process_rows(&stdout) {
@@ -435,7 +343,6 @@ fn windows_cn_running_exe() -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "windows")]
 fn windows_cn_registry_exe_candidates() -> Vec<PathBuf> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -502,7 +409,6 @@ $out | ForEach-Object { $_ }
     out
 }
 
-#[cfg(target_os = "windows")]
 fn windows_cn_exe_path_resolved() -> Option<PathBuf> {
     if let Some(p) = windows_cn_running_exe() {
         persist_cn_app_cache(&p);
@@ -540,200 +446,16 @@ fn windows_cn_exe_path_resolved() -> Option<PathBuf> {
     None
 }
 
-#[cfg_attr(
-    not(any(test, not(any(target_os = "macos", target_os = "windows")))),
-    allow(dead_code)
-)]
-fn linux_cmdline_is_codebuddy_cn(cmdline: &str) -> bool {
-    let lower = cmdline.to_ascii_lowercase();
-    if lower.contains("wb-switch") || lower.contains("workbuddy-switch") {
-        return false;
-    }
-    if lower.contains("crashpad") || lower.contains("--type=") {
-        return false;
-    }
-    cmdline.contains("CodeBuddy CN")
-        || lower.contains("codebuddy-cn")
-        || lower.contains("codebuddycn")
-}
-
-#[cfg_attr(
-    not(any(test, not(any(target_os = "macos", target_os = "windows")))),
-    allow(dead_code)
-)]
-fn linux_exe_is_codebuddy_cn(exe: &Path) -> bool {
-    let name = exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .trim();
-    name.eq_ignore_ascii_case("codebuddy-cn")
-        || name.eq_ignore_ascii_case("codebuddycn")
-        || is_codebuddy_cn_image_name(name)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn linux_codebuddy_cn_pids() -> Vec<u32> {
-    let self_pid = std::process::id();
-    let mut pids = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return pids;
-    };
-    for entry in entries.flatten() {
-        let pid: u32 = match entry.file_name().to_string_lossy().parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        if pid == self_pid {
-            continue;
-        }
-        if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
-            if linux_exe_is_codebuddy_cn(&exe) {
-                pids.push(pid);
-                continue;
-            }
-        }
-        let cmdline = match std::fs::read(format!("/proc/{pid}/cmdline")) {
-            Ok(bytes) if !bytes.is_empty() => String::from_utf8_lossy(&bytes).replace('\0', " "),
-            _ => continue,
-        };
-        if linux_cmdline_is_codebuddy_cn(&cmdline) {
-            pids.push(pid);
-        }
-    }
-    pids
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn wait_linux_pids_gone(pids: &[u32], timeout: Duration) -> Vec<u32> {
-    if pids.is_empty() {
-        return Vec::new();
-    }
-    let deadline = Instant::now() + timeout;
-    loop {
-        let alive: Vec<u32> = pids
-            .iter()
-            .copied()
-            .filter(|pid| Path::new(&format!("/proc/{pid}")).exists())
-            .collect();
-        if alive.is_empty() || Instant::now() >= deadline {
-            return alive;
-        }
-        std::thread::sleep(Duration::from_millis(400));
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn kill_linux_pids(pids: &[u32], signal: &str) {
-    if pids.is_empty() {
-        return;
-    }
-    let owned: Vec<String> = std::iter::once(signal.to_string())
-        .chain(pids.iter().map(|pid| pid.to_string()))
-        .collect();
-    let args: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
-    let _ = run_cmd("kill", &args, 10);
-}
-
-/// 解析 CodeBuddy CN 应用路径（macOS: .app bundle；Windows: exe）。
+/// 解析 CodeBuddy CN 应用路径（Windows: exe）。
 pub fn codebuddy_cn_app_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        macos_cn_app_path_resolved()
-    }
-    #[cfg(target_os = "windows")]
-    {
-        windows_cn_exe_path_resolved()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(cached) = load_codebuddy_cn_app_cache() {
-            if cached.is_file() && linux_exe_is_codebuddy_cn(&cached) {
-                return Some(cached);
-            }
-            clear_codebuddy_cn_app_cache();
-        }
-        let candidates = [
-            "/usr/bin/codebuddy-cn",
-            "/usr/local/bin/codebuddy-cn",
-            "/opt/codebuddy-cn/codebuddy-cn",
-        ];
-        for p in candidates {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                persist_cn_app_cache(&path);
-                return Some(path);
-            }
-        }
-        None
-    }
+    windows_cn_exe_path_resolved()
 }
 
 /// CodeBuddy CN 是否在运行（footer 语义 = GUI 主进程）。
 pub fn is_codebuddy_cn_running() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let resolved = macos_cn_app_path_resolved();
-        let patterns = macos_cn_main_patterns(resolved.as_deref());
-        !process::macos_pids_by_patterns(&patterns).is_empty()
-    }
-    #[cfg(target_os = "windows")]
-    {
-        !windows_cn_process_rows().is_empty()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        !linux_codebuddy_cn_pids().is_empty()
-    }
+    !windows_cn_process_rows().is_empty()
 }
 
-#[cfg(target_os = "macos")]
-fn close_codebuddy_cn_macos(timeout_secs: i64) -> Result<(), String> {
-    let started = Instant::now();
-    let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
-    let resolved = macos_cn_app_path_resolved();
-    let main_patterns = macos_cn_main_patterns(resolved.as_deref());
-    let bundle_patterns = macos_cn_bundle_patterns(resolved.as_deref());
-    let remaining = || timeout.saturating_sub(started.elapsed()).max(Duration::from_millis(100));
-
-    let quit_script = format!("quit app id \"{MACOS_BUNDLE_ID}\"");
-    let quit = run_cmd("osascript", &["-e", quit_script.as_str()], 10);
-    match quit {
-        Some(out) if !out.status.success() => {
-            eprintln!(
-                "[codebuddy-cn-ide] osascript quit failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        None => eprintln!("[codebuddy-cn-ide] osascript quit timed out"),
-        _ => {}
-    }
-
-    let graceful = Duration::from_secs(8).min(remaining());
-    let _ = process::wait_macos_main_gone(&main_patterns, graceful);
-
-    let bundle_pids = process::macos_pids_by_patterns(&bundle_patterns);
-    if !bundle_pids.is_empty() {
-        eprintln!(
-            "[codebuddy-cn-ide] killing {} bundle process(es)…",
-            bundle_pids.len()
-        );
-        process::kill_macos_pids(&bundle_pids);
-    }
-
-    let leftover = process::wait_macos_patterns_empty(&bundle_patterns, remaining());
-    if leftover.is_empty() {
-        return Ok(());
-    }
-    let pids: Vec<String> = leftover.iter().map(|pid| pid.to_string()).collect();
-    Err(format!(
-        "CodeBuddy CN 进程无法完全关闭（残留进程: {}）。请手动执行: kill -9 {}",
-        pids.join(", "),
-        pids.join(" ")
-    ))
-}
-
-#[cfg(target_os = "windows")]
 fn close_codebuddy_cn_windows(timeout_secs: i64) -> Result<(), String> {
     let rows = windows_cn_process_rows();
     if rows.is_empty() {
@@ -767,168 +489,30 @@ fn close_codebuddy_cn_windows(timeout_secs: i64) -> Result<(), String> {
     Err("CodeBuddy CN 进程无法关闭，请手动结束 CodeBuddy CN 进程".to_string())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn close_codebuddy_cn_linux(timeout_secs: i64) -> Result<(), String> {
-    let pids = linux_codebuddy_cn_pids();
-    if pids.is_empty() {
-        return Ok(());
-    }
-    kill_linux_pids(&pids, "-15");
-    let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
-    let graceful = Duration::from_secs(8).min(timeout);
-    let remaining = wait_linux_pids_gone(&pids, graceful);
-    if remaining.is_empty() {
-        return Ok(());
-    }
-    kill_linux_pids(&remaining, "-9");
-    let rest = timeout.saturating_sub(graceful).max(Duration::from_secs(1));
-    let leftover = wait_linux_pids_gone(&remaining, rest);
-    if leftover.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "CodeBuddy CN 进程无法关闭（残留进程: {}）。请手动执行: kill -9 {}",
-        leftover.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
-        leftover.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ")
-    ))
-}
-
 pub fn close_codebuddy_cn(timeout_secs: i64) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        close_codebuddy_cn_macos(timeout_secs)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        close_codebuddy_cn_windows(timeout_secs)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        close_codebuddy_cn_linux(timeout_secs)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn validate_macos_cn_startup(app: &Path) -> Result<(), String> {
-    let main_patterns = macos_cn_main_patterns(Some(app));
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let sustain = Duration::from_secs(10);
-    let mut seen_at: Option<Instant> = None;
-    while Instant::now() < deadline {
-        let now = Instant::now();
-        let alive = !process::macos_pids_by_patterns(&main_patterns).is_empty();
-        if alive {
-            match seen_at {
-                None => seen_at = Some(now),
-                Some(start) => {
-                    if now.duration_since(start) >= sustain {
-                        return Ok(());
-                    }
-                }
-            }
-        } else if seen_at.is_some() {
-            return Err(format!(
-                "CodeBuddy CN 启动后立即退出（疑似残留单例锁）。请先手动打开一次 CodeBuddy CN（路径: {}）",
-                app.display()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    Err(format!(
-        "启动 CodeBuddy CN 超时，未能确认运行（路径: {}）。请先手动打开一次 CodeBuddy CN。",
-        app.display()
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn launch_codebuddy_cn_macos() -> Result<(), String> {
-    let app = macos_cn_app_path_resolved().ok_or_else(|| {
-        "未找到 CodeBuddy CN 应用（尝试路径: /Applications/CodeBuddy CN.app）。请先手动打开一次 CodeBuddy CN 后重试。".to_string()
-    })?;
-    if !process::is_app_bundle(&app) {
-        return Err(format!(
-            "未找到 CodeBuddy CN 应用（尝试路径: {}）。请先手动打开一次 CodeBuddy CN 后重试。",
-            app.display()
-        ));
-    }
-
-    let bundle_patterns = macos_cn_bundle_patterns(Some(&app));
-    let bundle_pids = process::macos_pids_by_patterns(&bundle_patterns);
-    if !bundle_pids.is_empty() {
-        process::kill_macos_pids(&bundle_pids);
-        let _ = process::wait_macos_patterns_empty(&bundle_patterns, Duration::from_secs(5));
-    }
-
-    let app_lossy = app.to_string_lossy();
-    let open = run_cmd(
-        "open",
-        &["-n", "-a", app_lossy.as_ref(), "--args", "--new-window"],
-        10,
-    );
-    match open {
-        Some(out) if out.status.success() => {}
-        Some(out) => {
-            let reason = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let reason = if reason.is_empty() {
-                format!("open 退出码 {}", out.status.code().unwrap_or(-1))
-            } else {
-                reason
-            };
-            return Err(format!(
-                "启动 CodeBuddy CN 失败: {reason}（路径: {}）",
-                app.display()
-            ));
-        }
-        None => {
-            return Err(format!(
-                "启动 CodeBuddy CN 失败: open 超时（路径: {}）",
-                app.display()
-            ));
-        }
-    }
-
-    validate_macos_cn_startup(&app)
+    close_codebuddy_cn_windows(timeout_secs)
 }
 
 pub fn launch_codebuddy_cn() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        launch_codebuddy_cn_macos()
+    let exe = windows_cn_exe_path_resolved().ok_or_else(|| {
+        "未找到 CodeBuddy CN 程序（尝试路径: %LOCALAPPDATA%\\Programs\\CodeBuddy CN\\CodeBuddy CN.exe）。请先手动打开 CodeBuddy CN 后重试。".to_string()
+    })?;
+    if !is_existing_cn_exe(&exe) {
+        return Err(format!(
+            "未找到 CodeBuddy CN 程序（尝试路径: {}）。请先手动打开 CodeBuddy CN 后重试。",
+            exe.display()
+        ));
     }
-    #[cfg(target_os = "windows")]
-    {
-        let exe = windows_cn_exe_path_resolved().ok_or_else(|| {
-            "未找到 CodeBuddy CN 程序（尝试路径: %LOCALAPPDATA%\\Programs\\CodeBuddy CN\\CodeBuddy CN.exe）。请在 Windows 上打开 CodeBuddy CN 后重试。".to_string()
-        })?;
-        if !is_existing_cn_exe(&exe) {
-            return Err(format!(
-                "未找到 CodeBuddy CN 程序（尝试路径: {}）。请在 Windows 上打开 CodeBuddy CN 后重试。",
-                exe.display()
-            ));
-        }
-        persist_cn_app_cache(&exe);
-        process::cmd_builder(&exe)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("启动 CodeBuddy CN 失败: {e}（路径: {}）", exe.display()))?;
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let exe = codebuddy_cn_app_path().ok_or_else(|| {
-            "未找到 CodeBuddy CN 可执行文件（尝试路径: /usr/bin/codebuddy-cn）。请先手动打开一次。".to_string()
-        })?;
-        process::cmd_builder(&exe)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("启动 CodeBuddy CN 失败: {e}（路径: {}）", exe.display()))?;
-        Ok(())
-    }
+    persist_cn_app_cache(&exe);
+    process::cmd_builder(&exe)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动 CodeBuddy CN 失败: {e}（路径: {}）", exe.display()))?;
+    Ok(())
 }
 
-/// 状态：是否安装、是否运行、当前账号（仅来自本地状态文件 + 账号库，不读取钥匙串）。
+/// 状态：是否安装、是否运行、当前账号（仅来自本地状态文件 + 账号库，不读取 Safe Storage）。
 pub fn status() -> Value {
     let data_dir = codebuddy_cn_data_dir();
     let db_path = codebuddy_cn_state_db_path();
@@ -944,7 +528,7 @@ pub fn status() -> Value {
         if let Some(acc) = account::find_account(&id) {
             active_account_name = Some(account::account_display_name(&acc));
         } else {
-            // 状态文件有记录但账号库已无此账号：视为未检测到，不回退读取钥匙串
+            // 状态文件有记录但账号库已无此账号：视为未检测到，不回退读取 Safe Storage
             active_account_id = None;
         }
     }
@@ -990,9 +574,9 @@ pub fn switch_account(account_id: &str, restart: bool) -> Result<Value, String> 
     let session = build_session_json(&acc);
     eprintln!("[codebuddy-cn-ide] injecting secret…");
     let db_path = inject_codebuddy_cn_secret(&session, Some(&data_dir)).map_err(|err| {
-        if err.contains("Safe Storage") || err.contains("Keychain") {
+        if err.contains("Local State") || err.contains("DPAPI") {
             format!(
-                "注入登录状态失败：{err}\n\n请先手动打开 CodeBuddy CN 并登录一次，确保 Keychain 中存在「CodeBuddy CN Safe Storage」条目后再试。"
+                "注入登录状态失败：{err}\n\n请先手动打开 CodeBuddy CN 并登录一次，确保用户数据目录下存在包含 os_crypt.encrypted_key 的 Local State 文件后再试。"
             )
         } else {
             err
@@ -1153,64 +737,5 @@ mod tests {
         assert!(!s.iter().any(|p| {
             p.contains("CodeBuddy.exe") && !path_contains_codebuddy_cn_dir(p)
         }));
-    }
-
-    #[test]
-    fn linux_cmdline_matcher_accepts_cn_not_switcher() {
-        assert!(linux_cmdline_is_codebuddy_cn("/opt/codebuddy-cn/codebuddy-cn --foo"));
-        assert!(linux_cmdline_is_codebuddy_cn("/usr/bin/CodeBuddy CN"));
-        assert!(linux_exe_is_codebuddy_cn(Path::new("/usr/bin/codebuddy-cn")));
-        assert!(!linux_cmdline_is_codebuddy_cn("/usr/bin/workbuddy-switch"));
-        assert!(!linux_cmdline_is_codebuddy_cn(
-            "/opt/codebuddy-cn/codebuddy-cn --type=gpu-process"
-        ));
-        assert!(!linux_exe_is_codebuddy_cn(Path::new("/usr/bin/codebuddy")));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_cn_pattern_fallback_does_not_match_international_codebuddy() {
-        assert_eq!(
-            macos_cn_main_patterns(None),
-            vec!["CodeBuddy CN.app/Contents/MacOS".to_string()]
-        );
-        assert_eq!(
-            macos_cn_bundle_patterns(None),
-            vec!["CodeBuddy CN.app".to_string()]
-        );
-        assert_eq!(
-            macos_cn_main_patterns(Some(Path::new("/Applications/CodeBuddy CN.app"))),
-            vec!["/Applications/CodeBuddy CN.app/Contents/MacOS".to_string()]
-        );
-        let cands = macos_cn_app_candidates(Path::new("/Users/tester"));
-        let s: Vec<String> = cands.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        assert_eq!(
-            s,
-            vec![
-                "/Applications/CodeBuddy CN.app".to_string(),
-                "/Users/tester/Applications/CodeBuddy CN.app".to_string(),
-            ]
-        );
-        assert!(!s.iter().any(|p| p.ends_with("CodeBuddy.app")));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_cn_ps_filter_excludes_self_and_international() {
-        let self_pid = std::process::id();
-        let stdout = format!(
-            "{self_pid} /Applications/workbuddy-switch.app/Contents/MacOS/wb-switch\n\
-             6001 /Applications/CodeBuddy CN.app/Contents/MacOS/CodeBuddy CN --foo\n\
-             6002 /Applications/CodeBuddy.app/Contents/MacOS/CodeBuddy\n\
-             6003 /bin/zsh -c 'echo CodeBuddy CN.app mention via wb-switch'\n\
-             6004 /Applications/CodeBuddy CN.app/Contents/Resources/helper\n"
-        );
-        let main_kept = process::filter_ps_rows(&stdout, &macos_cn_main_patterns(None), self_pid);
-        let main_pids: Vec<u32> = main_kept.iter().map(|(pid, _)| *pid).collect();
-        assert_eq!(main_pids, vec![6001]);
-
-        let bundle_kept = process::filter_ps_rows(&stdout, &macos_cn_bundle_patterns(None), self_pid);
-        let bundle_pids: Vec<u32> = bundle_kept.iter().map(|(pid, _)| *pid).collect();
-        assert_eq!(bundle_pids, vec![6001, 6004]);
     }
 }

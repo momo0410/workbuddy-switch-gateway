@@ -11,8 +11,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import * as api from "@/lib/api";
-import type { AccountMeta } from "@/lib/types";
+import type { AccountMeta, AccountRegionKey } from "@/lib/types";
 import { useAccountsStore } from "@/stores/accounts";
 
 interface Props {
@@ -20,10 +28,17 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-/** OAuth 扫码登录采集：发起 → 打开浏览器 → 轮询采集结果 → 入库。 */
+/** 可登录的区域。两侧登录域名与方式不同（国服扫码 / 国际版三方授权），必须在发起前选定。 */
+const REGION_OPTIONS: { value: AccountRegionKey; label: string; hint: string; action: string }[] = [
+  { value: "cn", label: "国服", hint: "www.codebuddy.cn", action: "扫码登录" },
+  { value: "intl", label: "国际版", hint: "www.workbuddy.ai", action: "授权登录" },
+];
+
+/** OAuth 登录采集：选区域 → 发起 → 打开浏览器 → 轮询采集结果 → 入库。 */
 export function OAuthLoginDialog({ open, onOpenChange }: Props) {
   const reconcileAccounts = useAccountsStore((s) => s.reconcileAccounts);
 
+  const [region, setRegion] = useState<AccountRegionKey>("cn");
   const [busy, setBusy] = useState(false);
   const [loginId, setLoginId] = useState<string | null>(null);
   const [uri, setUri] = useState("");
@@ -33,6 +48,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
   // 打开时重置
   useEffect(() => {
     if (open) {
+      setRegion("cn");
       setBusy(false);
       setLoginId(null);
       setUri("");
@@ -78,7 +94,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
     setBusy(true);
     setError("");
     try {
-      const res = await api.oauthStart();
+      const res = await api.oauthStart(region);
       setLoginId(res.loginId);
       setUri(res.verificationUri);
       // 按当前宿主能力打开验证页
@@ -90,20 +106,47 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
     }
   }
 
+  const activeRegion = REGION_OPTIONS.find((o) => o.value === region) ?? REGION_OPTIONS[0];
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>OAuth 扫码登录</DialogTitle>
+          <DialogTitle>OAuth 登录</DialogTitle>
           <DialogDescription>
-            在浏览器中打开验证链接，扫码授权后将自动采集账号并入库。
+            {region === "intl"
+              ? "在浏览器中打开验证链接，用 Google / GitHub / X 完成授权后自动采集账号并入库。"
+              : "在浏览器中打开验证链接，扫码授权后将自动采集账号并入库。"}
           </DialogDescription>
         </DialogHeader>
 
         {!loginId && !result && (
           <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="oauth-region">服务区域</Label>
+              <Select
+                value={region}
+                onValueChange={(v) => setRegion(v as AccountRegionKey)}
+                disabled={busy}
+              >
+                <SelectTrigger id="oauth-region" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {REGION_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}（{o.hint}）
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs leading-5 text-muted-foreground">
+                两区域的登录域名与登录方式不同：国服为微信 / 企业微信扫码，国际版为
+                Google / GitHub / X 授权。国际版账号不参与自动签到与自动旅行。
+              </p>
+            </div>
             <Button onClick={start} disabled={busy} className="w-full">
-              {busy ? "正在发起登录…" : "开始扫码登录"}
+              {busy ? "正在发起登录…" : `开始 ${activeRegion.label} ${activeRegion.action}`}
             </Button>
           </div>
         )}
@@ -131,7 +174,9 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
               </AlertDescription>
             </Alert>
             <p className="text-sm text-muted-foreground">
-              正在等待扫码授权，请在浏览器完成操作…
+              {region === "intl"
+                ? "正在等待完成授权，请在浏览器中操作…"
+                : "正在等待扫码授权，请在浏览器完成操作…"}
             </p>
           </div>
         )}
