@@ -1,0 +1,27 @@
+[package]
+name = "wb-switch-gateway"
+version = "0.5.0"
+edition = "2021"
+description = "workbuddy2api 网关内核（Rust 版）：账号池 + OpenAI 兼容 HTTP 接口，替代原 Go gateway.exe"
+
+[dependencies]
+wb-switch-core = { path = "../wb-switch-core" }
+
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5"
+thiserror = "2"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tower = { version = "0.5", features = ["util"] }
+axum = "0.7"
