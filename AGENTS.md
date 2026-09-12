@@ -10,7 +10,7 @@ These instructions are for AI assistants working in this project.
 - `.trellis/spec/wb-switch-core/backend/token-statistics.md` — Token 统计的跨层接口契约
   （核心签名 / Tauri 命令 / HTTP 路由 / 数据源 / 响应结构）
 
-历史任务的归档记录见 `docs/trellis-archive/`。
+历史任务的开发记录不再随仓库分发，如需查阅请向维护者索取。
 
 > 2026-09-12 整理说明：本项目曾由 Trellis 工具初始化，但 `workflow.md`、
 > `workspace/`、`spec/cli/`、`.agents/skills/`、`.codex/agents/` 均不存在于本仓库，
