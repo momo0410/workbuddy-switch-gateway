@@ -1,0 +1,40 @@
+{
+  "listen": ":7863",
+  "api_key": "your-api-key-here",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+  "cooldown": {
+    "soft_rate": "60s"
+  },
+  "schedule": {
+    "checkin_hours": [9, 21],
+    "keepalive_hours": [22],
+    "checkin_enabled": true,
+    "keepalive_enabled": true
+  },
+  "upstream": {
+    "timeout_seconds": 120,
+    "header_timeout_seconds": 120,
+    "idle_timeout_seconds": 300
+  },
+  "features": {
+    "sanitize_blacklist_fingerprints": true
+  },
+  "upstash": {
+    "url": "",
+    "token": ""
+  },
+  "pool": {
+    "max_in_flight": 3,
+    "breaker_threshold": 3,
+    "breaker_cooldown": "30m",
+    "breaker_cooldown_max": "6h",
+    "idle_weight_per_hour": 0.5,
+    "idle_weight_max": 5.0
+  },
+  "session_sticky": {
+    "enabled": true,
+    "ttl": "30m",
+    "gc_interval": "5m"
+  }
+}
