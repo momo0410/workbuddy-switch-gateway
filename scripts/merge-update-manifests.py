@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Merge per-platform updater JSON files into latest.json.
 
-Also:
-- copies latest-macos-*.json to latest-darwin-*.json (Tauri {{target}}=darwin)
-- injects windows-* platform entries into latest-macos-x86_64.json so already
-  installed Windows apps (which still request the macOS Intel manifest) can
-  find windows-x86_64-nsis / windows-x86_64.
+Reads every latest-*.json in the target directory and merges their platform
+entries into a single latest.json (Windows-only project: the Windows manifests
+are the only inputs).
 """
 
 from __future__ import annotations
@@ -57,35 +55,6 @@ def merge_manifests(items: list[tuple[Path, dict]]) -> dict | None:
     return merged
 
 
-def inject_windows_into_macos_intel(directory: Path, merged: dict) -> None:
-    macos_intel = directory / "latest-macos-x86_64.json"
-    if not macos_intel.is_file():
-        return
-    try:
-        data = json.loads(macos_intel.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(data, dict):
-        return
-    platforms = data.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        return
-    changed = False
-    for key, value in merged.get("platforms", {}).items():
-        if str(key).startswith("windows-") and platforms.get(key) != value:
-            platforms[key] = value
-            changed = True
-    if changed:
-        macos_intel.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def copy_macos_to_darwin(directory: Path) -> None:
-    for macos_path in directory.glob("latest-macos-*.json"):
-        suffix = macos_path.name[len("latest-macos-") :]
-        darwin_path = directory / f"latest-darwin-{suffix}"
-        darwin_path.write_bytes(macos_path.read_bytes())
-
-
 def merge_directory(directory: Path) -> Path | None:
     items = load_manifests(directory)
     merged = merge_manifests(items)
@@ -93,8 +62,6 @@ def merge_directory(directory: Path) -> Path | None:
         return None
     latest = directory / "latest.json"
     latest.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    inject_windows_into_macos_intel(directory, merged)
-    copy_macos_to_darwin(directory)
     return latest
 
 
@@ -103,38 +70,6 @@ def _self_test() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
-        (root / "latest-macos-aarch64.json").write_text(
-            json.dumps(
-                {
-                    "version": "0.1.19",
-                    "notes": "",
-                    "pub_date": "2026-08-21T00:00:00Z",
-                    "platforms": {
-                        "darwin-aarch64": {
-                            "signature": "mac-arm",
-                            "url": "https://example/mac-arm.app.tar.gz",
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        (root / "latest-macos-x86_64.json").write_text(
-            json.dumps(
-                {
-                    "version": "0.1.19",
-                    "notes": "",
-                    "pub_date": "2026-08-21T00:00:01Z",
-                    "platforms": {
-                        "darwin-x86_64": {
-                            "signature": "mac-intel",
-                            "url": "https://example/mac-intel.app.tar.gz",
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
         (root / "latest-windows-x86_64.json").write_text(
             json.dumps(
                 {
@@ -160,17 +95,9 @@ def _self_test() -> None:
         merged = json.loads(latest.read_text(encoding="utf-8"))
         assert merged["version"] == "0.1.19"
         assert set(merged["platforms"]) == {
-            "darwin-aarch64",
-            "darwin-x86_64",
             "windows-x86_64-nsis",
             "windows-x86_64",
         }
-        macos_intel = json.loads((root / "latest-macos-x86_64.json").read_text(encoding="utf-8"))
-        assert "windows-x86_64-nsis" in macos_intel["platforms"]
-        assert "windows-x86_64" in macos_intel["platforms"]
-        assert "darwin-x86_64" in macos_intel["platforms"]
-        darwin = json.loads((root / "latest-darwin-x86_64.json").read_text(encoding="utf-8"))
-        assert darwin == macos_intel
         print("merge-update-manifests: self-test ok")
 
 

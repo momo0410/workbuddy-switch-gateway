@@ -2,32 +2,36 @@
 
 ## 环境要求
 
-Node.js ≥ 20、Rust stable、macOS（或 Windows/Linux）。
+Node.js ≥ 20、Rust stable、Windows x64。
+
+> 本项目**仅支持 Windows x64**。macOS / Linux 的构建、打包与 CI 矩阵均已移除。
 
 ## 开发命令
 
-```bash
+```powershell
 npm install
 npm run tauri dev        # 开发模式
-npm run build:app        # 构建 debug .app（含前端资源补丁）
-npm run build:app:release  # 构建 release .app + 签名更新包
+npm run build            # 前端类型检查与构建
+npm run tauri build      # 构建 Windows 安装包
 ```
 
 ## 发布新版本
 
-签名密钥（自动更新用）存放于 `~/.wb-switch/wb-switch-updater.key`，构建脚本通过
-`TAURI_SIGNING_PRIVATE_KEY` 注入。发布新版本时：
+签名密钥（自动更新用）通过 `TAURI_SIGNING_PRIVATE_KEY` 环境变量注入（CI 使用仓库 secret）。
+发布新版本时：
 
-1. `npm run build:app:release` 生成 `.app.tar.gz` + `.sig`（Windows NSIS 构建会额外生成当前版本的 `*_x64-setup.exe` + `.exe.sig`）。CI 会先清掉 `target/**/release/bundle`，避免 cargo cache 把旧安装包带进 Release。
-2. macOS：`UPDATE_OS=macos UPDATE_ARCH=aarch64 sh scripts/gen-update-json.sh` 生成 `latest-macos-aarch64.json`；Intel 用 `UPDATE_ARCH=x86_64`
-3. Windows：`UPDATE_OS=windows UPDATE_ARCH=x86_64 sh scripts/gen-update-json.sh` 生成 `latest-windows-x86_64.json`
-4. `python3 scripts/merge-update-manifests.py <产物目录>` 合并为 `latest.json`，并把 Windows 平台项写入 `latest-macos-x86_64.json`（兼容已安装的 Windows 客户端）
-5. 将安装包、签名更新包、`latest*.json` 一并上传到 GitHub Release
+1. `npm run tauri build` 生成 Windows 安装包及其签名（CI 以 `--bundles nsis` 构建，产出 `workbuddy-switch_<版本>_x64-setup.exe` + `.exe.sig`）。CI 会先清掉 `target/**/release/bundle`，避免 cargo cache 把旧安装包带进 Release。
+2. `UPDATE_OS=windows UPDATE_ARCH=x86_64 sh scripts/gen-update-json.sh` 生成 `latest-windows-x86_64.json`（该脚本现在只支持 `UPDATE_OS=windows`）
+3. `python3 scripts/merge-update-manifests.py <产物目录>` 把各 `latest-*.json` 合并为 `latest.json`
+4. 将安装包、签名更新包、`latest*.json` 一并上传到 GitHub Release
+
+> CI（`.github/workflows/build.yml`）的矩阵只构建 `win-x64`，产出 NSIS 安装程序
+> `workbuddy-switch_<版本>_x64-setup.exe`。
 
 ### npm 版（webui）发布
 
-1. 编译 server 二进制并上传 GitHub Release（`.github/workflows/build.yml` 自动执行）
-2. `cd npm && npm publish`（包名 `workbuddy-switch`，postinstall 按平台从 Release 下载二进制）
+1. CI（`.github/workflows/build.yml`）在 tag 发布时编译 server 二进制，并作为平台包 `workbuddy-switch-win32-x64` 发布到 npm registry
+2. `cd npm && npm publish`（包名 `workbuddy-switch`，postinstall 从平台包复制二进制到 `bin/`，不依赖 GitHub）
 
 ## 目录结构
 

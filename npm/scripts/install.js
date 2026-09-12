@@ -1,6 +1,6 @@
 // workbuddy-switch postinstall：从「平台包」复制本平台二进制。
 //
-// 平台分包（esbuild 模式）：二进制发布在独立 npm 包（workbuddy-switch-<platform>-<arch>），
+// Windows-only：二进制发布在独立 npm 包 workbuddy-switch-win32-x64，
 // 主包声明为 optionalDependencies，安装时 npm 自动装好平台包，postinstall 只需复制——
 // 不依赖 GitHub，国内镜像（npmmirror）也能稳定安装。
 //
@@ -10,18 +10,14 @@ const fs = require("fs");
 const path = require("path");
 
 const FILE = {
-  "darwin-arm64": "wb-switch-darwin-arm64",
-  "darwin-x64": "wb-switch-darwin-x64",
   "win32-x64": "wb-switch-win32-x64.exe",
-  "linux-x64": "wb-switch-linux-x64",
-  "linux-arm64": "wb-switch-linux-arm64",
 }[`${process.platform}-${process.arch}`];
 
 const PLATFORM_PKG = `workbuddy-switch-${process.platform}-${process.arch}`;
 
 if (!FILE) {
   console.warn(
-    `workbuddy-switch: 跳过平台 ${process.platform}-${process.arch}（当前不支持），` +
+    `workbuddy-switch: 跳过平台 ${process.platform}-${process.arch}（仅支持 Windows x64），` +
       `可手动下载二进制后放置到 bin/ 目录`,
   );
   process.exit(0);

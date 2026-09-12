@@ -6,17 +6,15 @@ const path = require("path");
 
 const binDir = path.join(__dirname, "..", "bin");
 
-// 平台 → 二进制文件名（与 install.js 保持一致）
+// Windows-only 平台 → 二进制文件名（与 install.js 保持一致）
 const FILE = {
-  "darwin-arm64": "wb-switch-darwin-arm64",
-  "darwin-x64": "wb-switch-darwin-x64",
   "win32-x64": "wb-switch-win32-x64.exe",
-  "linux-x64": "wb-switch-linux-x64",
-  "linux-arm64": "wb-switch-linux-arm64",
 }[`${process.platform}-${process.arch}`];
 
 if (!FILE) {
-  console.error(`wb-switch: 不支持平台 ${process.platform}-${process.arch}`);
+  console.error(
+    `wb-switch: 不支持平台 ${process.platform}-${process.arch}（本包仅支持 Windows x64）`,
+  );
   process.exit(1);
 }
 

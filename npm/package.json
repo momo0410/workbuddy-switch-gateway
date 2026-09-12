@@ -10,10 +10,7 @@
     "scripts"
   ],
   "optionalDependencies": {
-    "workbuddy-switch-darwin-arm64": "0.1.37",
-    "workbuddy-switch-darwin-x64": "0.1.37",
-    "workbuddy-switch-win32-x64": "0.1.37",
-    "workbuddy-switch-linux-x64": "0.1.37"
+    "workbuddy-switch-win32-x64": "0.1.37"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"

@@ -1,17 +1,18 @@
 #!/bin/bash
-# 生成 tauri updater 版本清单 latest-<os>-<arch>.json
+# 生成 tauri updater 版本清单 latest-<os>-<arch>.json（Windows-only）
 # 用法：
-#   UPDATE_OS=macos UPDATE_ARCH=aarch64 sh scripts/gen-update-json.sh [owner] [repo]
 #   UPDATE_OS=windows UPDATE_ARCH=x86_64 sh scripts/gen-update-json.sh [owner] [repo]
 # 可选：BUNDLE_DIR、UPDATE_ARCHIVE_NAME
 set -e
 cd "$(dirname "$0")/.." || exit 1
 
-OWNER="${1:-changexbc}"
-REPO="${2:-workbuddy-switch}"
+# 默认值必须与 src-tauri/tauri.conf.json 的 updater endpoints 一致，
+# 否则生成的 URL 会指向别的仓库，客户端永远拉不到更新。
+OWNER="${1:-momo0410}"
+REPO="${2:-workbuddy-switch-gateway}"
 VERSION="${UPDATE_VERSION:-$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
-UPDATE_OS="${UPDATE_OS:-macos}"
-UPDATE_ARCH="${UPDATE_ARCH:-aarch64}"
+UPDATE_OS="${UPDATE_OS:-windows}"
+UPDATE_ARCH="${UPDATE_ARCH:-x86_64}"
 UPDATE_ARCHIVE_NAME="${UPDATE_ARCHIVE_NAME:-}"
 
 case "$UPDATE_ARCH" in
@@ -23,11 +24,6 @@ case "$UPDATE_ARCH" in
 esac
 
 case "$UPDATE_OS" in
-  macos)
-    DEFAULT_BUNDLE="macos"
-    SIG_GLOB="*.app.tar.gz.sig"
-    PLATFORM_KEYS="darwin-$UPDATE_ARCH"
-    ;;
   windows)
     DEFAULT_BUNDLE="nsis"
     # Tauri 2 createUpdaterArtifacts=true 签的是当前版本安装包：*_VERSION_x64-setup.exe.sig
@@ -35,7 +31,7 @@ case "$UPDATE_OS" in
     PLATFORM_KEYS="windows-$UPDATE_ARCH-nsis windows-$UPDATE_ARCH"
     ;;
   *)
-    echo "gen-update-json: 不支持的系统：$UPDATE_OS（只支持 macos 或 windows）" >&2
+    echo "gen-update-json: 不支持的系统：$UPDATE_OS（只支持 windows）" >&2
     exit 1
     ;;
 esac

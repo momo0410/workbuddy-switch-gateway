@@ -5,7 +5,7 @@ V=$1
 [ -z "$V" ] && echo "用法: sh scripts/bump-version.sh <新版本>" && exit 1
 cd "$(dirname "$0")/.."
 perl -pi -e "s/\"version\": \"[0-9.]+\"/\"version\": \"$V\"/" package.json src-tauri/tauri.conf.json npm/package.json
-perl -pi -e "s/^version = \"[0-9.]+\"/version = \"$V\"/" src-tauri/Cargo.toml crates/wb-switch-core/Cargo.toml crates/wb-switch-server/Cargo.toml
+perl -pi -e "s/^version = \"[0-9.]+\"/version = \"$V\"/" src-tauri/Cargo.toml crates/wb-switch-core/Cargo.toml crates/wb-switch-server/Cargo.toml crates/wb-switch-gateway/Cargo.toml
 # 平台包 package.json
 for f in npm/platform/*/package.json; do
   perl -pi -e "s/\"version\": \"[0-9.]+\"/\"version\": \"$V\"/" "$f"

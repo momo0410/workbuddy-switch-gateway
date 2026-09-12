@@ -178,16 +178,35 @@
 | 聊天端点 | `copilot.tencent.com`（与 API **分域**） | `www.workbuddy.ai`（**同域**） |
 | 凭证 `domain` | `www.workbuddy.cn` | `www.workbuddy.ai` |
 | 本机认证文件 | `workbuddy-desktop.info` | `workbuddy-desktop-ai.info` |
+| OAuth 平台标识 | `workbuddy` | `workbuddy-ai` |
 | 自动签到 / 自动旅行 | ✅ 默认参与 | ⛔ 默认跳过（见下） |
 | 代表模型 | `deepseek-v4-flash`、`glm-5.2`、`kimi-k2.7` | `gpt-5.6-*`、`gemini-3.5-flash`、`deepseek-v4.1-flash` |
 
 **区域判定**：按账号库 `domain` 字段后缀（`.cn` → 国服，`.ai` → 国际版）。
 网关与客户端的所有请求都据此选择域名，无需手工切换配置。
 
+**添加账号**：「账号管理」页的「OAuth 登录」会先选服务区域，再按该区域的域名与
+平台标识发起登录。**两区域的登录方式不同**：
+
+| | 国服 | 国际版 |
+|---|---|---|
+| 登录方式 | 微信 / 企业微信**扫码** | **Google / GitHub / X 三方授权**，另有账号密码、企业 SSO、Tencent OneID |
+| 授权页 | 自建登录页 | Keycloak realm（`/auth/realms/copilot/...`）内的 iframe |
+
+> 国际版没有扫码。流程仍是「申请 state → 浏览器授权 → 轮询取 token」，只是浏览器
+> 里那一步是三方联合登录。实测（2026-09）：`platform=workbuddy-ai` 走完授权后
+> `/v2/plugin/auth/token` 正常返回凭证（`domain=www.workbuddy.ai`），可正常入库。
+>
+> 该 token 端点**一次性消费**：取到一次后再次轮询会退回 `11217 login ing`，
+> 因此应用会在拿到 token 后立即入库并重试拉取账号信息。
+
 **一键导入**：「账号管理」页的「从本机导入」会**同时探测两个区域的认证文件**，
 把本机已登录的账号全部并入账号库，提示中会标明各自区域。
 
 账号卡片上会给国际版账号打一个「国际版」标记，国服账号不加标记。
+
+> **两个区域的身份命名空间相互独立**：同一串 uid（或同一个邮箱）可以同时存在于
+> 国服与国际版。账号库的身份匹配因此**带区域**，跨区域永不互相覆盖。
 
 ### 国际版账号默认不参与自动签到与猫猫旅行
 
@@ -269,9 +288,9 @@
 | 磁盘 | 约 50 MB |
 | 其他 | 无需安装 Docker、Node.js 或 Go |
 
-> **目前仅验证 Windows**。仓库内保留有 macOS / Linux 的构建脚本与 CI 矩阵
-> （`.github/workflows/build.yml`，默认被 `.gitignore` 忽略），但**尚未实际验证
-> 运行效果**，相关平台的代码分支不在本项目的维护范围内。
+> **本项目为 Windows 专属**。macOS 与 Linux 支持已**移除**：仓库不再保留对应平台的
+> 构建脚本与 CI 矩阵，也不再产出 DMG、`.deb`、AppImage 等安装包。非 Windows 平台的
+> 构建与运行不在本项目的支持范围内。
 
 ### 安装方式一：安装包（推荐）
 
@@ -289,9 +308,9 @@
 
 > `WebView2Loader.dll` 必须与 exe 位于同一目录，请勿删除。
 
-### 安装方式三：从源码构建
+### 安装方式三：从源码构建（Windows）
 
-需要 Go ≥ 1.22、Node.js ≥ 16、Rust 工具链（MSVC 或 MinGW 均可）。
+需要 Go ≥ 1.22、Node.js ≥ 16、Rust 工具链（MSVC）。
 
 ```powershell
 # 1) 构建网关（Go），产物直接作为内嵌资源
@@ -309,10 +328,13 @@ go build -trimpath -ldflags "-s -w" `
 cd ..\workbuddy-switch-gateway
 .\scripts\build-single.ps1        # 产出 dist-single\wb-switch.exe
 
-# 3) 生成安装包（可选）
+# 3) 生成 Windows 安装包（可选，产出 NSIS 安装程序）
 npm install
 npm run tauri build
 ```
+
+> 自动更新所需的签名密钥在构建时通过 `TAURI_SIGNING_PRIVATE_KEY` 注入；
+> 发布流程见 [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md)。
 
 ---
 
@@ -321,9 +343,14 @@ npm run tauri build
 ### 账号管理
 
 1. 打开应用，进入「账号管理」页面
-2. 点击「扫码登录」，用微信 / 企业微信完成授权；也可「从本机导入」已登录的账号
+2. 点击「OAuth 登录」，先选服务区域：国服用微信 / 企业微信扫码，国际版用
+   Google / GitHub / X 授权；也可「从本机导入」已登录的账号
 3. 账号卡片显示登录状态、签到状态、积分余额与到期时间
 4. 「切换」按钮可将该账号写入 WorkBuddy 客户端 / CodeBuddy CLI / CodeBuddy CN IDE
+   - **CodeBuddy CLI**：写入 `~/.codebuddy/settings.json` 的 `env.CODEBUDDY_AUTH_TOKEN`
+     （保留该文件中的其他配置）。只更新**后续加载会话**使用的默认账号，不会切换
+     正在运行的会话；请由 ACP 重新加载会话，或重启 CodeBuddy CLI 后生效。普通 CLI
+     在同一进程内执行 `/resume` 不保证重新读取认证配置。
 
 ### 启用网关
 
@@ -486,9 +513,14 @@ scripts/build-single.ps1      构建单一可执行文件（本项目新增）
 ### 测试
 
 ```bash
-cargo test -p wb-switch-core    # 核心逻辑单元测试
+cargo test --workspace          # 核心逻辑 + 桌面端单元测试
 npm run build                   # 前端类型检查与构建
 ```
+
+> Windows x64 上实测 `cargo test --workspace` 全部通过（188 个用例）。
+> 构建需要 **MSVC 工具链**（`stable-x86_64-pc-windows-msvc`，Tauri 依赖它链接
+> WebView2）；若需安装，可用
+> `winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`。
 
 网关侧（Go）自带完整测试套件；应用补丁后：
 
@@ -496,10 +528,7 @@ npm run build                   # 前端类型检查与构建
 cd path/to/workbuddy2api && go test ./...
 ```
 
-> 已知有 3 个单测在 Windows 上失败（`session` / `export_import` / `codebuddy_cli`
-> 各一），原因是断言里硬编码了 POSIX 路径（如 `/tmp`、`/Users/...`）。
-> 对应实现本身是正确的，属于测试自身的跨平台问题。
-> 上游 `TestPickAntiThunderingHerd`（防雪崩）在补丁前后均会失败，属上游既有问题。
+> 网关侧测试已在 Windows x64 上实测，`go test ./...` 当前全部通过。
 
 ---
 

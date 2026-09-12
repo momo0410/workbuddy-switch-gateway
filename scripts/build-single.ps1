@@ -31,7 +31,7 @@ try {
         $age = (Get-Date) - (Get-Item (Join-Path $embedded "gateway.exe")).LastWriteTime
         Write-Host ("    已有 embedded/gateway.exe（{0:N0} 小时前构建），如需重建请加 -GatewaySource" -f $age.TotalHours)
     } else {
-        $gwDir = Join-Path (Split-Path -Parent $root) "wb2api"
+        $gwDir = Join-Path $root "go-gateway"
         if (-not (Test-Path $gwDir)) {
             throw "未找到网关源码目录 $gwDir；可用 -GatewaySource 指定已有的 gateway.exe"
         }

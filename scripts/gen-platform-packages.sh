@@ -1,5 +1,5 @@
 #!/bin/bash
-# 生成平台包 package.json（esbuild 模式：每个平台一个 npm 包，从 npm registry 下载二进制）
+# 生成平台包 package.json（Windows-only：平台包发布在 npm，二进制由 npm registry 下载）
 # 用法：sh scripts/gen-platform-packages.sh <版本号，如 0.1.6>
 set -e
 V=$1
@@ -25,10 +25,6 @@ JSON
   echo "生成 $dir (bin=$binfile)"
 }
 
-gen darwin-arm64 darwin arm64 wb-switch-darwin-arm64
-gen darwin-x64 darwin x64 wb-switch-darwin-x64
 gen win32-x64 win32 x64 wb-switch-win32-x64.exe
-gen linux-x64 linux x64 wb-switch-linux-x64
-gen linux-arm64 linux arm64 wb-switch-linux-arm64
 
 echo "平台包生成完成（版本 $V），把对应二进制复制到各包 bin/ 后 npm publish。"
