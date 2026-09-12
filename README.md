@@ -310,22 +310,20 @@
 
 ### 安装方式三：从源码构建（Windows）
 
-需要 Go ≥ 1.22、Node.js ≥ 16、Rust 工具链（MSVC）。
+需要 Go ≥ 1.22、Node.js ≥ 20、Rust 工具链。
+
+> 本项目**仅支持 Windows x64**。macOS / Linux 的构建、打包与 CI 矩阵均已移除。
 
 ```powershell
 # 1) 构建网关（Go），产物直接作为内嵌资源
-git clone --depth 1 https://github.com/Sliverkiss/workbuddy2api.git
-cd workbuddy2api
-
-#    应用「国际版支持」补丁（需要国际版时才要；只做国服可跳过）
-git apply ..\workbuddy-switch-gateway\patches\intl-support.patch
-
+#    Go 源码已随仓库分发在 go-gateway/，无需另行 clone 上游
+cd go-gateway
 go build -trimpath -ldflags "-s -w" `
-  -o ..\workbuddy-switch-gateway\crates\wb-switch-core\embedded\gateway.exe `
+  -o ..\crates\wb-switch-core\embedded\gateway.exe `
   .\cmd\server
+cd ..
 
 # 2) 构建前端并打包为单一可执行文件
-cd ..\workbuddy-switch-gateway
 .\scripts\build-single.ps1        # 产出 dist-single\wb-switch.exe
 
 # 3) 生成 Windows 安装包（可选，产出 NSIS 安装程序）
@@ -333,8 +331,51 @@ npm install
 npm run tauri build
 ```
 
-> 自动更新所需的签名密钥在构建时通过 `TAURI_SIGNING_PRIVATE_KEY` 注入；
-> 发布流程见 [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md)。
+开发调试命令：
+
+```powershell
+npm install
+npm run tauri dev        # 开发模式
+npm run build            # 前端类型检查与构建
+npm run tauri build      # 构建 Windows 安装包
+```
+
+### 发布新版本
+
+签名密钥（自动更新用）通过 `TAURI_SIGNING_PRIVATE_KEY` 环境变量注入（CI 使用仓库 secret）。
+
+1. `npm run tauri build` 生成 Windows 安装包及其签名（CI 以 `--bundles nsis` 构建，产出 `workbuddy-switch_<版本>_x64-setup.exe` + `.exe.sig`）。CI 会先清掉 `target/**/release/bundle`，避免 cargo cache 把旧安装包带进 Release。
+2. `UPDATE_OS=windows UPDATE_ARCH=x86_64 sh scripts/gen-update-json.sh` 生成 `latest-windows-x86_64.json`（该脚本只支持 `UPDATE_OS=windows`）。
+   **手动执行时须同时传 `UPDATE_ARCHIVE_NAME=workbuddy-switch-windows-x86_64-setup.exe`**，否则清单里的文件名会与实际上传的资产名不一致，导致更新 404。
+3. `python3 scripts/merge-update-manifests.py <产物目录>` 把各 `latest-*.json` 合并为 `latest.json`
+4. 将安装包、签名更新包、`latest*.json` 一并上传到 GitHub Release
+
+> CI（`.github/workflows/build.yml`）的矩阵只构建 `win-x64`，产出 NSIS 安装程序
+> `workbuddy-switch_<版本>_x64-setup.exe`。
+
+**npm 版（webui）发布**：
+
+1. CI 在 tag 发布时编译 server 二进制，作为平台包 `workbuddy-switch-win32-x64` 发布到 npm registry
+2. `cd npm && npm publish`（包名 `workbuddy-switch`，postinstall 从平台包复制二进制到 `bin/`，不依赖 GitHub）
+
+### 目录结构
+
+```
+src-tauri/src/       # Tauri command 薄包装与托盘
+crates/
+  wb-switch-core/    # 核心逻辑：账号/认证/切换/会话/签到/刷新/更新/配置
+  wb-switch-server/  # HTTP server + CLI：axum API + rust-embed 前端
+  wb-switch-gateway/ # 网关内核（Rust 移植版，chat_completions 仍为占位）
+src/                 # 前端：components/pages/lib（api.ts 双通道：Tauri invoke / HTTP fetch）
+go-gateway/          # Go 版网关源码（当前实际构建依赖，编译后内嵌）
+npm/                 # npm 包：package.json + bin + scripts/install.js
+scripts/             # 构建与发布脚本
+```
+
+### 隐私注意事项
+
+- 仓库不提交本地数据（`accounts.json`、认证文件、密钥、token 由 `.gitignore` 排除）
+- 发布前用 `git grep` 扫描 token 模式（`ghp_`/`npm_`/`gho_` 等）
 
 ---
 
@@ -534,11 +575,8 @@ cd path/to/workbuddy2api && go test ./...
 
 ## 对上游的改动
 
-本项目对 `workbuddy2api`（Go 网关）的改动以补丁形式维护：
-
-```
-patches/intl-support.patch        （基于上游 cfb1713 生成）
-```
+本项目对 `workbuddy2api`（Go 网关）的改动**已直接合入 `go-gateway/`**，
+随仓库一并分发（源码基线为上游 `cfb1713`，叠加下列改动）。
 
 改动内容：
 
@@ -608,7 +646,7 @@ patches/intl-support.patch        （基于上游 cfb1713 生成）
 版权声明（见 [`LICENSE`](./LICENSE)），并在此基础上补充整合部分的版权声明。
 
 > 本仓库是**独立整合作品**，与上述两个上游项目相互独立、各自演进。
-> 上游的后续更新不会被自动合入；对网关的改动以 `patches/` 下的补丁形式单独维护。
+> 上游的后续更新不会被自动合入；对网关的改动已直接体现在 `go-gateway/` 源码中。
 > 本项目不代表上游作者的立场或背书。
 
 整合部分（本项目新增）同样以 MIT 许可证发布。逐项来源说明与改动清单见

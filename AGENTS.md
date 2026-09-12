@@ -3,18 +3,18 @@
 
 These instructions are for AI assistants working in this project.
 
-编写代码前，请先阅读 `.trellis/spec/` 下与当前改动层次相关的契约：
+本仓库曾由 Trellis 工具初始化。Trellis 的工作流骨架（`workflow.md`、`workspace/`、
+`spec/cli/`、`.agents/skills/`、`.codex/agents/`）与 spec 目录均未随仓库分发，
+相关引用已于 2026-09-12 清理。
 
-- `.trellis/spec/guides/ui-component-guidelines.md` — 前端 UI 规范（shadcn 优先、Rhea 主题、
-  统计页布局与图表语义、交互要求）
-- `.trellis/spec/wb-switch-core/backend/token-statistics.md` — Token 统计的跨层接口契约
-  （核心签名 / Tauri 命令 / HTTP 路由 / 数据源 / 响应结构）
+当前生效的编码约定见下方各节（UI Component Policy、Git Commit Language）。
 
-历史任务的开发记录不再随仓库分发，如需查阅请向维护者索取。
+Token 统计与网关的接口契约可直接查阅实现本身：
 
-> 2026-09-12 整理说明：本项目曾由 Trellis 工具初始化，但 `workflow.md`、
-> `workspace/`、`spec/cli/`、`.agents/skills/`、`.codex/agents/` 均不存在于本仓库，
-> 相关引用已清理。本块仅保留仍然生效的编码契约指引。
+- `crates/wb-switch-core/src/modules/token_stats.rs` — Token 统计聚合
+  （`get_statistics(days: Option<i64>)`）
+- `crates/wb-switch-server/src/api.rs` — HTTP 路由（含 `GET /api/token-stats`）
+- `src-tauri/src/commands.rs` — 对应的 Tauri 命令包装
 
 <!-- TRELLIS:END -->
 
