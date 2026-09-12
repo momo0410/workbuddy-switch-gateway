@@ -1,22 +1,20 @@
 <!-- TRELLIS:START -->
-# Trellis Instructions
+# 编码契约（Coding Contracts）
 
 These instructions are for AI assistants working in this project.
 
-This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+编写代码前，请先阅读 `.trellis/spec/` 下与当前改动层次相关的契约：
 
-- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
-- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
-- `.trellis/workspace/` — per-developer journals and session traces
-- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+- `.trellis/spec/guides/ui-component-guidelines.md` — 前端 UI 规范（shadcn 优先、Rhea 主题、
+  统计页布局与图表语义、交互要求）
+- `.trellis/spec/wb-switch-core/backend/token-statistics.md` — Token 统计的跨层接口契约
+  （核心签名 / Tauri 命令 / HTTP 路由 / 数据源 / 响应结构）
 
-If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+历史任务的归档记录见 `docs/trellis-archive/`。
 
-If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
-- `.agents/skills/` — reusable Trellis skills
-- `.codex/agents/` — optional custom subagents
-
-Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+> 2026-09-12 整理说明：本项目曾由 Trellis 工具初始化，但 `workflow.md`、
+> `workspace/`、`spec/cli/`、`.agents/skills/`、`.codex/agents/` 均不存在于本仓库，
+> 相关引用已清理。本块仅保留仍然生效的编码契约指引。
 
 <!-- TRELLIS:END -->
 

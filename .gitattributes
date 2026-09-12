@@ -1,9 +1,9 @@
-# Trellis: append-only developer journals should merge cleanly across
-# parallel sessions/worktrees — each session only appends a new block, so
-# there is nothing to actually conflict on.
+# Trellis: 已在 2026-09-12 整理中移除原 union 规则。
 #
-# Do NOT add a rule for workspace/*/index.md here — it is fully regenerated
-# every session, so a real conflict there is expected and safe to resolve by
-# picking either side (task state lives in task.json, not index.md). See
-# .trellis/spec/cli/backend/directory-structure.md for details.
-.trellis/workspace/*/journal-*.md merge=union
+# 原规则针对 `.trellis/workspace/*/journal-*.md`，但该目录从未存在于本仓库
+# （`workflow.md` / `workspace/` 均未创建），规则永不匹配任何文件。
+#
+# 原本注释引用的 `.trellis/spec/cli/backend/directory-structure.md` 同样不存在。
+#
+# 若将来重新引入 Trellis 的 workspace 日志机制，再按需加回：
+# .trellis/workspace/*/journal-*.md merge=union
