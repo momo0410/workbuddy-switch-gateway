@@ -319,15 +319,32 @@ Pi / Grok Build / ZCode / Kimi Code / OpenClaw / Hermes Agent。
 
 | 文件 | 说明 |
 |---|---|
-| `WorkBuddy_Switch_Gateway_<版本>_x64-setup.exe` | 安装向导，自动创建开始菜单与卸载项 |
-| `WorkBuddy_Switch_Gateway_<版本>_x64_en-US.msi` | MSI 包，适合批量部署 |
-| `WorkBuddy_Switch_Gateway_<版本>_portable.zip` | 免安装版，解压即用，不写入注册表 |
+| `workbuddy-switch_<版本>_x64-setup.exe` | 安装向导，自动创建开始菜单与卸载项 |
+| `workbuddy-switch-windows-x86_64-portable.zip` | 便携版，解压即用，不写入注册表 |
+| `latest.json` / `latest-windows-x86_64.json` | 自动更新清单（应用内更新使用） |
 
-### 安装方式二：免安装
+### 安装方式二：便携版（免安装）
 
-解压 zip 后直接双击 `WorkBuddy-Switch-Gateway.exe`。
+下载 `workbuddy-switch-windows-x86_64-portable.zip`，解压后双击 `wb-switch-rust.exe`
+即可运行，不写入注册表。
 
-> `WebView2Loader.dll` 必须与 exe 位于同一目录，请勿删除。
+> `WebView2Loader.dll` 必须与 `wb-switch-rust.exe` 位于同一目录，请勿删除。
+
+### 更新到新版本
+
+- **便携版（覆盖更新，推荐）**：解压新版便携包，把 `wb-switch-rust.exe` 覆盖到原
+  目录（安装版目录为 `%LOCALAPPDATA%\WorkBuddy Switch Gateway`，或你安装时指定的
+  目录），重启应用即可。`WebView2Loader.dll` 无需更换。
+- **安装版**：直接运行新版安装包即可自动升级 —— 安装器会先卸载旧版后安装，
+  **无需手动卸载**。若旧版装在自定义目录（安装器默认装到 `%LOCALAPPDATA%`），
+  用静默参数装回原位置：
+
+  ```powershell
+  .\workbuddy-switch_<版本>_x64-setup.exe /S /D=原安装目录
+  ```
+
+  > `/D=` 必须是最后一个参数且路径不要加引号（NSIS 约定）。静默安装不弹窗口，
+  > 完成后注册表版本与开始菜单快捷方式都会更新到新版本。
 
 ### 安装方式三：从源码构建（Windows）
 
