@@ -12,6 +12,7 @@ package session
 import (
 	"encoding/json"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -296,4 +297,28 @@ func ExtractKey(body []byte) string {
 func strOrEmpty(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// SessionKeyFromSeed 把任意种子串折叠成一个稳定的会话键。
+//
+// 用途：Anthropic Messages / Responses 等协议没有 conversation_id，
+// 适配层用「首条 user 文本 + system 摘要」当种子，这里做 FNV-1a 折叠，
+// 得到与 OpenAI 侧 conversation_id 等价的短键。
+//
+// 注意：只做哈希不截断输入，保证不同会话碰撞概率足够低；
+// 相同种子必然得到相同键，这是粘性路由成立的前提。
+func SessionKeyFromSeed(seed string) string {
+	if seed == "" {
+		return ""
+	}
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	var hash uint64 = offset64
+	for i := 0; i < len(seed); i++ {
+		hash ^= uint64(seed[i])
+		hash *= prime64
+	}
+	return "seed-" + strconv.FormatUint(hash, 16)
 }

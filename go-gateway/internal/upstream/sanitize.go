@@ -17,6 +17,8 @@ var sanitizeFeatures = []string{
 	"cc_entrypoint=",             // 尾随裸键值（截断前缀即可命中）
 	"You are Claude Code",        // 身份句（截断前缀即可命中）
 	"Main branch (",              // 注入指令句（截断前缀即可命中）
+	"github.com/anthropics",      // 官方反馈链接（Claude Code 2.1.260+ 起出现在系统提示中）
+	"led by OpenAI",              // Codex CLI instructions 的归属句
 }
 
 // sanitizeHdrRe 剥离层：header 键名即触发（与值无关），整段删除。
@@ -34,6 +36,20 @@ var sanitizeRewrites = [][2]string{
 	{
 		"Main branch (you will usually use this for PRs)",
 		"Default branch (you will usually use this for PRs)",
+	},
+	{
+		// Claude Code 2.1.260 的系统提示里带有指向 Anthropic 官方仓库的反馈链接，
+		// 上游按「未批准渠道」指纹拦截（HTTP 400 code=11128）。
+		// 只替换链接本身，句子结构与语义（如何提交反馈）不变。
+		"https://github.com/anthropics/claude-code/issues",
+		"https://github.com/user-feedback/issues",
+	},
+	{
+		// Codex CLI 的 instructions 首句声明 "an open source project led by OpenAI"，
+		// 上游同样按「未批准渠道」指纹拦截（HTTP 400 code=11128）。
+		// 只改归属表述，语义（开源项目）不变。
+		"led by OpenAI",
+		"led by the community",
 	},
 }
 

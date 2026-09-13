@@ -663,6 +663,22 @@ func TestAPIKeyAuth(t *testing.T) {
 	if rec.Code != 200 {
 		t.Errorf("right key: code=%d", rec.Code)
 	}
+	// x-api-key 形态（Anthropic SDK / Claude Code 的 ANTHROPIC_API_KEY）
+	req = httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("x-api-key", "secret")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Errorf("right x-api-key: code=%d", rec.Code)
+	}
+	// x-api-key 错 key
+	req = httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("x-api-key", "wrong")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Errorf("wrong x-api-key: code=%d", rec.Code)
+	}
 }
 
 func TestStatusEndpoint(t *testing.T) {

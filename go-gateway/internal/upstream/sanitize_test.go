@@ -37,6 +37,40 @@ func TestBranchRewritten(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1.260+ 的系统提示里带有指向 Anthropic 官方仓库的反馈链接，
+// 上游按「未批准渠道」指纹拦截（HTTP 400 code=11128），必须改写为安全链接。
+func TestFeedbackLinkRewritten(t *testing.T) {
+	in := "- To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"
+	out := sanitizeText(in)
+	if strings.Contains(out, "github.com/anthropics") {
+		t.Errorf("official feedback link not rewritten: %q", out)
+	}
+	if !strings.Contains(out, "https://github.com/user-feedback/issues") {
+		t.Errorf("replacement link missing: %q", out)
+	}
+	// 句子其余部分与反馈语义保持不变。
+	if !strings.Contains(out, "To give feedback") {
+		t.Errorf("surrounding sentence changed: %q", out)
+	}
+}
+
+// Codex CLI 的 instructions 首句含 "an open source project led by OpenAI"，
+// 上游同样按「未批准渠道」指纹拦截（HTTP 400 code=11128），必须改写归属表述。
+func TestCodexAttributionRewritten(t *testing.T) {
+	in := "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. " +
+		"Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful."
+	out := sanitizeText(in)
+	if strings.Contains(out, "led by OpenAI") {
+		t.Errorf("attribution not rewritten: %q", out)
+	}
+	if !strings.Contains(out, "led by the community") {
+		t.Errorf("replacement missing: %q", out)
+	}
+	if !strings.HasPrefix(out, "You are a coding agent") {
+		t.Errorf("prefix changed: %q", out)
+	}
+}
+
 func TestBillingHeaderStrippedValueIrrelevant(t *testing.T) {
 	out := sanitizeText(ccHeader)
 	if strings.Contains(out, "x-anthropic-billing-header") {

@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"workbuddy2api/internal/auth"
 	"workbuddy2api/internal/pool"
 	"workbuddy2api/internal/session"
 	"workbuddy2api/internal/upstream"
@@ -57,6 +55,10 @@ func NewHandler(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
+	h.mux.HandleFunc("POST /responses", h.withAuth(h.responses))
+	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.messages))
+	h.mux.HandleFunc("POST /messages", h.withAuth(h.messages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
@@ -67,17 +69,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// withAuth 校验客户端凭据。
+//
+// 同时接受两种头部形态，覆盖不同客户端的认证习惯：
+//   - Authorization: Bearer <key> —— OpenAI SDK、Claude Code 的 ANTHROPIC_AUTH_TOKEN、
+//     Claude Desktop 3P（inferenceGatewayAuthScheme=bearer）
+//   - x-api-key: <key>            —— Anthropic SDK、Claude Code 的 ANTHROPIC_API_KEY
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.APIKey != "" {
-			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != h.cfg.APIKey {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
-				return
-			}
+		if !h.authorized(r) {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+			return
 		}
 		next(w, r)
 	}
+}
+
+// authorized 判断请求是否携带了正确的网关密钥；未配置密钥时一律放行。
+func (h *Handler) authorized(r *http.Request) bool {
+	if h.cfg.APIKey == "" {
+		return true
+	}
+	if authz := r.Header.Get("Authorization"); strings.HasPrefix(authz, "Bearer ") {
+		return strings.TrimPrefix(authz, "Bearer ") == h.cfg.APIKey
+	}
+	return r.Header.Get("x-api-key") == h.cfg.APIKey
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +294,7 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 }
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	body, err := readLimitedBody(r)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
@@ -288,151 +304,37 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &peek)
 
-	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
 	st := newChatStat(time.Now(), body, peek.Stream)
 	defer st.done()
 
-	tried := map[string]bool{}
-	var lastErr error
-
-	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
 	sessKey := ""
-	stickyUID := ""
 	if h.cfg.Session != nil {
 		sessKey = session.ExtractKey(body)
-		if sessKey != "" {
-			if uid, ok := h.cfg.Session.Resolve(sessKey); ok {
-				stickyUID = uid
-			}
-		}
 	}
 
-	// 在途租约：成功选中即占名额；函数出口（含成功 return 与 panic）统一释放。
-	var heldUID string
-	defer func() {
-		if heldUID != "" {
-			h.cfg.Pool.Release(heldUID)
-		}
-	}()
-	releaseHeld := func() {
-		if heldUID != "" {
-			h.cfg.Pool.Release(heldUID)
-			heldUID = ""
-		}
-	}
-	// fail 在轮转失败分支统一：释放租约 + 若失败号正是粘性号则解绑（下次请求重新分配）。
-	fail := func(uid string) {
-		releaseHeld()
-		if stickyUID != "" && uid == stickyUID {
-			h.cfg.Session.Unbind(sessKey)
-			stickyUID = ""
-		}
-	}
-
-	for i := 0; i < h.cfg.MaxRotate; i++ {
-		// 选号：粘性号优先（PickByUID 已校验 health + 在途未满），否则普通轮换。
-		var acct *auth.Auth
-		if stickyUID != "" {
-			acct = h.cfg.Pool.PickByUID(stickyUID)
-			if acct == nil {
-				// 粘性号当前不可用（冷却/占满）→ 解绑，本次回落普通轮换。
-				h.cfg.Session.Unbind(sessKey)
-				stickyUID = ""
-			}
-		}
-		if acct == nil {
-			acct = h.cfg.Pool.PickExcluding(tried)
-		}
-		if acct == nil {
-			st.status = http.StatusServiceUnavailable
-			break
-		}
-		st.uid = acct.UID
-		tried[acct.UID] = true
-
-		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
-		if !h.cfg.Pool.Acquire(acct.UID) {
-			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
-			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail()/PickByUID-nil 的解绑一致）。
-			if stickyUID != "" && acct.UID == stickyUID {
-				h.cfg.Session.Unbind(sessKey)
-				stickyUID = ""
-			}
-			continue // 最后一个名额被并发抢走 → 换号
-		}
-		heldUID = acct.UID
-
-		// token 临近过期 → 先 refresh（失败冷却换号）
-		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
-			if err := h.cfg.Upstream.RefreshToken(acct); err != nil {
-				lastErr = err
-				var ue *upstream.Error
-				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
-					h.cfg.Pool.Disable(acct.UID, "refresh session dead")
-				} else {
-					h.cfg.Pool.NoteError(acct.UID)
-				}
-				fail(acct.UID)
-				continue
-			}
-			if err := acct.SaveAtomic(); err != nil {
-				// 刷新成功但落盘失败：下次启动会用旧 token，必须暴露
-				log.Printf("chat refresh uid=%s: save auth failed: %v", acct.UID, err)
-			}
-		}
-
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, body)
-		if terr != nil {
-			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
-			// 上游 client 已打 transport error 日志。
-			st.status = http.StatusServiceUnavailable
-			lastErr = terr
-			fail(acct.UID)
-			continue
-		}
-		if status >= 400 {
-			st.status = status
-			kind := upstream.Classify(status, string(respBody))
-			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-			h.applyErrorPolicy(acct.UID, kind)
-			fail(acct.UID)
-			continue
-		}
-		h.cfg.Pool.NoteSuccess(acct.UID)
-		// 粘性跟随最终成功号：本轮成功的账号成为该会话的粘性绑定（覆盖旧绑定）。
-		// 若 sticky 号失败、轮换到别的号成功，这里把会话重绑到新号，多轮对话下一跳不再随机抽。
-		if sessKey != "" && h.cfg.Session != nil {
-			h.cfg.Session.Bind(sessKey, acct.UID)
-		}
-		if peek.Stream {
-			// 流式：透传结束后立即关闭上游 body，避免 defer 在轮转场景下堆积 fd。
-			st.status = http.StatusOK
-			stats := newChatStatsReaderSince(rc, st.start)
-			_ = upstream.Stream(w, stats)
-			st.ttfb = stats.TTFB()
-			st.toks, _ = stats.Tokens()
-			rc.Close()
-			return
-		}
-		resp, err := upstream.Aggregate(rc)
-		rc.Close()
-		if err != nil {
-			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
-			st.status = http.StatusBadGateway
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
-		st.status = http.StatusOK
-		st.toks = completionTokens(resp)
+	result, status, ferr := h.forwardChat(body, peek.Stream, sessKey)
+	if ferr != nil {
+		st.status = status
+		st.uid = result.UID
+		writeOpenAIError(w, status, "no_healthy_account", errText(ferr))
 		return
 	}
-	msg := "all accounts unavailable (cooling/disabled)"
-	if lastErr != nil {
-		msg += ": " + lastErr.Error()
+	st.uid = result.UID
+
+	if result.Stream != nil {
+		st.status = http.StatusOK
+		stats := newChatStatsReaderSince(result.Stream, st.start)
+		_ = upstream.Stream(w, stats)
+		st.ttfb = stats.TTFB()
+		st.toks, _ = stats.Tokens()
+		result.Stream.Close()
+		h.release(result.UID)
+		return
 	}
-	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
-	st.status = http.StatusServiceUnavailable
+
+	writeJSON(w, http.StatusOK, result.Response)
+	st.status = http.StatusOK
+	st.toks = completionTokens(result.Response)
 }
 
 // applyErrorPolicy 按错误分类对账号施加冷却/禁用/熔断策略（最终版状态机）。
@@ -473,6 +375,25 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+const maxRequestBody = 8 << 20
+
+func readLimitedBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, errors.New("empty request body")
+	}
+	return body, nil
+}
+
+var nowFunc = time.Now
+
+func jsonUnmarshal(s string, v any) error {
+	return json.Unmarshal([]byte(s), v)
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	raw, _ := json.Marshal(v)
