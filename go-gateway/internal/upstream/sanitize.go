@@ -30,8 +30,12 @@ var sanitizeKvRe = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\n]*;?\s*`)
 // sanitizeRewrites 改写层：全模板句逐字替换（每句只改一个词，语义不变）。
 var sanitizeRewrites = [][2]string{
 	{
-		"You are Claude Code, Anthropic's official CLI for Claude.",
-		"You are Claude Code, Anthropic's official CLI tool for Claude.",
+		// 身份句有两个客户端变体，查找串不带结尾标点，两种形态都能命中：
+		//   CLI 模式：You are Claude Code, Anthropic's official CLI for Claude.
+		//   3P 模式：You are Claude Code, Anthropic's official CLI for Claude,
+		//            running within the Claude Agent SDK.（claude-desktop-3p，2.1.260+）
+		"You are Claude Code, Anthropic's official CLI for Claude",
+		"You are Claude Code, Anthropic's official CLI tool for Claude",
 	},
 	{
 		"Main branch (you will usually use this for PRs)",

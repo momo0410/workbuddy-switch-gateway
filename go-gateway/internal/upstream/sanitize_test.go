@@ -27,6 +27,19 @@ func TestIdentityRewritten(t *testing.T) {
 	}
 }
 
+// 3P（claude-desktop-3p）身份句变体：整句更长、以逗号续接，
+// 命中同样的上游指纹，必须一并改写。
+func TestIdentityVariantRewritten(t *testing.T) {
+	in := "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+	out := sanitizeText(in)
+	if strings.Contains(out, "official CLI for Claude") {
+		t.Errorf("identity variant not rewritten: %q", out)
+	}
+	if !strings.Contains(out, "official CLI tool for Claude, running within the Claude Agent SDK.") {
+		t.Errorf("expected rewritten variant: %q", out)
+	}
+}
+
 func TestBranchRewritten(t *testing.T) {
 	out := sanitizeText(ccBranch)
 	if !strings.Contains(out, "Default branch (you will usually use this for PRs)") {
