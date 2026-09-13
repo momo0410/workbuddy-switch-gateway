@@ -1,6 +1,6 @@
 [package]
 name = "wb-switch-gateway"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "workbuddy2api 网关内核（Rust 版）：账号池 + OpenAI 兼容 HTTP 接口，替代原 Go gateway.exe"
 
