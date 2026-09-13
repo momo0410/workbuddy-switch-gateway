@@ -13,10 +13,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::modules::account::{account_display_name, get_str};
 use crate::modules::config::{atomic_write, official_usage_cache_file, store_dir};
-use crate::modules::credits::authenticated_post;
+use crate::modules::credits::{authenticated_post, official_usage_url};
 
-pub const OFFICIAL_USAGE_URL: &str =
-    "https://www.workbuddy.cn/billing/meter/get-user-request-usage";
 pub const OFFICIAL_USAGE_PAGE_SIZE: usize = 3_000;
 pub const OFFICIAL_USAGE_DETAIL_LIMIT: usize = 100;
 const OFFICIAL_USAGE_MAX_PAGES: usize = 100;
@@ -415,6 +413,9 @@ async fn fetch_account_usage(
 ) -> Result<AccountFetch, String> {
     let start_time = format!("{range_start} 00:00:00");
     let end_time = format!("{range_end} 23:59:59");
+    // 用量接口域名跟随账号区域：国际版账号必须发往 workbuddy.ai，
+    // 否则会被国服网关以 401 拒绝（与账号 domain 不匹配）。
+    let url = official_usage_url(account);
     let mut page_number = 1;
     let mut fetched_raw = 0;
     let mut reported_total = 0;
@@ -424,7 +425,7 @@ async fn fetch_account_usage(
     loop {
         let response = authenticated_post(
             account,
-            OFFICIAL_USAGE_URL,
+            &url,
             json!({
                 "startTime": start_time,
                 "endTime": end_time,

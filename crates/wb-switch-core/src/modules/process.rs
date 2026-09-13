@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::modules::auth_file;
-use crate::modules::config;
+use crate::modules::config::{self, Region};
 
 /// 创建子进程命令。Windows 上加 CREATE_NO_WINDOW，避免每次执行 tasklist/powershell
 /// 等控制台命令时闪出 cmd 黑窗口（GUI 应用卡顿/跳动的主因）。
@@ -95,10 +95,31 @@ pub(crate) fn is_self_image_name(name: &str) -> bool {
     stem.eq_ignore_ascii_case("workbuddy-switch") || stem.eq_ignore_ascii_case("wb-switch")
 }
 
-/// 精确匹配 WorkBuddy / CodeBuddy 映像，禁止子串命中 workbuddy-switch。
-fn is_workbuddy_image_name(name: &str) -> bool {
+/// 区域客户端映像名（stem，忽略 .exe）。
+///
+/// 国服客户端是 WorkBuddy.exe / CodeBuddy.exe；国际版（WorkBuddy AI）是独立的
+/// WorkBuddyAI.exe。两者可同时安装、同时运行，切换账号必须按目标账号区域操作，
+/// 否则会拉起错误区域的客户端（认证文件与客户端不匹配）。
+fn region_image_stems(region: Region) -> &'static [&'static str] {
+    match region {
+        Region::Cn => &["WorkBuddy", "CodeBuddy"],
+        Region::Intl => &["WorkBuddyAI"],
+    }
+}
+
+/// 精确匹配指定区域的官方客户端映像，禁止子串命中 workbuddy-switch。
+fn is_region_image_name(name: &str, region: Region) -> bool {
     let stem = image_stem(image_name_from_path_str(name));
-    stem.eq_ignore_ascii_case("WorkBuddy") || stem.eq_ignore_ascii_case("CodeBuddy")
+    region_image_stems(region)
+        .iter()
+        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
+}
+
+/// 精确匹配任意区域的官方客户端映像。
+fn is_workbuddy_image_name(name: &str) -> bool {
+    Region::ALL
+        .iter()
+        .any(|region| is_region_image_name(name, *region))
 }
 
 pub(crate) fn is_crashpad_helper_name(name: &str) -> bool {
@@ -149,6 +170,7 @@ fn windows_fallback_exe_candidates(
     program_files_x86: Option<&str>,
     username: Option<&str>,
     drives: &[char],
+    region: Region,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut push = |p: PathBuf| {
@@ -157,25 +179,32 @@ fn windows_fallback_exe_candidates(
         }
     };
     let mut push_win_dir = |parts: &[&str]| {
-        let mut wb = parts.to_vec();
-        wb.push("WorkBuddy.exe");
-        push(windows_path(&wb));
-        let mut cb = parts.to_vec();
-        cb.push("CodeBuddy.exe");
-        push(windows_path(&cb));
+        for stem in region_image_stems(region) {
+            let exe = format!("{stem}.exe");
+            let mut with_exe: Vec<&str> = parts.to_vec();
+            with_exe.push(&exe);
+            push(windows_path(&with_exe));
+        }
+    };
+    let dirs: &[&str] = match region {
+        Region::Cn => &["WorkBuddy", "CodeBuddy"],
+        Region::Intl => &["WorkBuddyAI"],
     };
 
     if let Some(local) = local_appdata.map(str::trim).filter(|s| !s.is_empty()) {
-        push_win_dir(&[local, "Programs", "WorkBuddy"]);
-        push_win_dir(&[local, "Programs", "CodeBuddy"]);
+        for dir in dirs {
+            push_win_dir(&[local, "Programs", dir]);
+        }
     }
     if let Some(pf) = program_files.map(str::trim).filter(|s| !s.is_empty()) {
-        push_win_dir(&[pf, "WorkBuddy"]);
-        push_win_dir(&[pf, "CodeBuddy"]);
+        for dir in dirs {
+            push_win_dir(&[pf, dir]);
+        }
     }
     if let Some(pf86) = program_files_x86.map(str::trim).filter(|s| !s.is_empty()) {
-        push_win_dir(&[pf86, "WorkBuddy"]);
-        push_win_dir(&[pf86, "CodeBuddy"]);
+        for dir in dirs {
+            push_win_dir(&[pf86, dir]);
+        }
     }
 
     let user = username.map(str::trim).filter(|s| !s.is_empty());
@@ -186,27 +215,17 @@ fn windows_fallback_exe_candidates(
         }
         let root = format!("{letter}:");
         if let Some(user) = user {
-            push_win_dir(&[
-                &root,
-                "Users",
-                user,
-                "AppData",
-                "Local",
-                "Programs",
-                "WorkBuddy",
-            ]);
-            push_win_dir(&[
-                &root,
-                "Users",
-                user,
-                "AppData",
-                "Local",
-                "Programs",
-                "CodeBuddy",
-            ]);
+            for dir in dirs {
+                push_win_dir(&[&root, "Users", user, "AppData", "Local", "Programs", dir]);
+            }
         }
-        push_win_dir(&[&root, "Program Files", "WorkBuddy"]);
-        push_win_dir(&[&root, "Program Files", "CodeBuddy"]);
+        for dir in dirs {
+            push_win_dir(&[&root, "Program Files", dir]);
+        }
+        // 安装器允许自定义路径（例如 E:\WorkBuddyAI），盘符根目录也纳入兜底。
+        for dir in dirs {
+            push_win_dir(&[&root, dir]);
+        }
     }
     out
 }
@@ -284,7 +303,7 @@ pub(crate) fn parse_windows_process_rows(stdout: &str) -> Vec<WindowsProcessRow>
         .collect()
 }
 
-fn keep_windows_workbuddy_row(row: &WindowsProcessRow) -> bool {
+fn keep_windows_workbuddy_row(row: &WindowsProcessRow, region: Region) -> bool {
     let path_s = row
         .exe_path
         .as_ref()
@@ -297,13 +316,13 @@ fn keep_windows_workbuddy_row(row: &WindowsProcessRow) -> bool {
     if is_crashpad_helper_name(&row.name) || is_crashpad_helper_name(file_name) {
         return false;
     }
-    is_workbuddy_image_name(&row.name) || is_workbuddy_image_name(file_name)
+    is_region_image_name(&row.name, region) || is_region_image_name(file_name, region)
 }
 
-fn filter_windows_workbuddy_rows(rows: &[WindowsProcessRow]) -> Vec<WindowsProcessRow> {
+fn filter_windows_workbuddy_rows(rows: &[WindowsProcessRow], region: Region) -> Vec<WindowsProcessRow> {
     let mut out = Vec::new();
     for row in rows {
-        if !keep_windows_workbuddy_row(row) {
+        if !keep_windows_workbuddy_row(row, region) {
             continue;
         }
         if out.iter().any(|r: &WindowsProcessRow| r.pid == row.pid) {
@@ -314,7 +333,7 @@ fn filter_windows_workbuddy_rows(rows: &[WindowsProcessRow]) -> Vec<WindowsProce
     out
 }
 
-fn parse_windows_registry_path_lines(stdout: &str) -> Vec<PathBuf> {
+fn parse_windows_registry_path_lines(stdout: &str, region: Region) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for line in stdout.lines() {
         let Some(parsed) = parse_windows_display_icon(line) else {
@@ -324,7 +343,7 @@ fn parse_windows_registry_path_lines(stdout: &str) -> Vec<PathBuf> {
         if is_self_image_name(name) {
             continue;
         }
-        if !name.is_empty() && !is_workbuddy_image_name(name) {
+        if !name.is_empty() && !is_region_image_name(name, region) {
             continue;
         }
         let pb = PathBuf::from(parsed);
@@ -348,15 +367,15 @@ fn is_existing_workbuddy_exe(path: &Path) -> bool {
     path.is_file() && is_workbuddy_exe_file_name(path)
 }
 
-/// 记住已存在的 exe；缓存已是同一路径则不重复写。
-fn persist_workbuddy_exe(path: &Path) {
+/// 记住已存在的 exe（按区域缓存）；缓存已是同一路径则不重复写。
+fn persist_workbuddy_exe(region: Region, path: &Path) {
     if !is_existing_workbuddy_exe(path) {
         return;
     }
-    if config::load_workbuddy_exe_cache().as_deref() == Some(path) {
+    if config::load_workbuddy_exe_cache_for(region).as_deref() == Some(path) {
         return;
     }
-    let _ = config::save_workbuddy_exe_cache(path);
+    let _ = config::save_workbuddy_exe_cache_for(region, path);
 }
 
 /// Windows：执行 PowerShell 并取 stdout。
@@ -377,13 +396,14 @@ pub(crate) fn windows_tasklist_image_rows(image: &str) -> Vec<WindowsProcessRow>
     parse_tasklist_csv(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// 精确映像名收集 WorkBuddy/CodeBuddy PID，排除本工具、自身 PID 与 crashpad。
-fn windows_workbuddy_process_rows() -> Vec<WindowsProcessRow> {
+/// 精确映像名收集指定区域的客户端 PID，排除本工具、自身 PID 与 crashpad。
+fn windows_workbuddy_process_rows(region: Region) -> Vec<WindowsProcessRow> {
     let self_pid = std::process::id();
     let mut rows = Vec::new();
-    rows.extend(windows_tasklist_image_rows("WorkBuddy.exe"));
-    rows.extend(windows_tasklist_image_rows("CodeBuddy.exe"));
-    filter_windows_workbuddy_rows(&rows)
+    for stem in region_image_stems(region) {
+        rows.extend(windows_tasklist_image_rows(&format!("{stem}.exe")));
+    }
+    filter_windows_workbuddy_rows(&rows, region)
         .into_iter()
         .filter(|r| r.pid != self_pid)
         .collect()
@@ -423,11 +443,14 @@ pub(crate) fn existing_windows_drives() -> Vec<char> {
         .collect()
 }
 
-fn windows_running_workbuddy_exe() -> Option<PathBuf> {
-    let script = "Get-Process -Name WorkBuddy,CodeBuddy -ErrorAction SilentlyContinue | \
-         ForEach-Object { $p = ''; try { $p = $_.Path } catch {}; '{0}|{1}|{2}' -f $_.Id, $_.ProcessName, $p }";
-    let stdout = ps_output(script, 5)?;
-    for row in filter_windows_workbuddy_rows(&parse_windows_process_rows(&stdout)) {
+fn windows_running_workbuddy_exe(region: Region) -> Option<PathBuf> {
+    let names = region_image_stems(region).join(",");
+    let script = format!(
+        "Get-Process -Name {names} -ErrorAction SilentlyContinue | \
+         ForEach-Object {{ $p = ''; try {{ $p = $_.Path }} catch {{}}; '{{0}}|{{1}}|{{2}}' -f $_.Id, $_.ProcessName, $p }}"
+    );
+    let stdout = ps_output(&script, 5)?;
+    for row in filter_windows_workbuddy_rows(&parse_windows_process_rows(&stdout), region) {
         if let Some(p) = row.exe_path {
             if is_existing_workbuddy_exe(&p) {
                 return Some(p);
@@ -437,11 +460,13 @@ fn windows_running_workbuddy_exe() -> Option<PathBuf> {
     None
 }
 
-fn windows_registry_exe_candidates() -> Vec<PathBuf> {
+fn windows_registry_exe_candidates(region: Region) -> Vec<PathBuf> {
+    // 注册表按名称枚举所有已知客户端；区域过滤在解析阶段完成，
+    // 这样一份脚本同时覆盖国服与国际版（WorkBuddy AI）。
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 $out = @()
-$appNames = @('WorkBuddy.exe','CodeBuddy.exe')
+$appNames = @('WorkBuddy.exe','CodeBuddy.exe','WorkBuddyAI.exe')
 $appHives = @(
   'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
   'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
@@ -476,6 +501,7 @@ foreach ($hive in $unHives) {
     if ($loc) {
       $out += [string](Join-Path $loc 'WorkBuddy.exe')
       $out += [string](Join-Path $loc 'CodeBuddy.exe')
+      $out += [string](Join-Path $loc 'WorkBuddyAI.exe')
     }
   }
 }
@@ -484,30 +510,30 @@ $out | ForEach-Object { $_ }
     let Some(stdout) = ps_output(script, 8) else {
         return Vec::new();
     };
-    parse_windows_registry_path_lines(&stdout)
+    parse_windows_registry_path_lines(&stdout, region)
 }
 
-/// Windows：动态查找 WorkBuddy 可执行文件路径。
+/// Windows：动态查找指定区域的客户端可执行文件路径。
 ///
 /// 顺序：运行中进程 Path → 上次成功路径缓存 → 注册表 App Paths / Uninstall
 /// （含 WOW6432Node、DisplayIcon）→ LOCALAPPDATA/Program Files 与各盘符常见目录。
-/// 命中且文件存在则写入缓存；缓存指向丢失文件则丢弃。
-pub fn windows_workbuddy_exe_path() -> Option<PathBuf> {
-    if let Some(p) = windows_running_workbuddy_exe() {
-        persist_workbuddy_exe(&p);
+/// 命中且文件存在则写入该区域的缓存；缓存指向丢失文件则丢弃。
+pub fn windows_workbuddy_exe_path(region: Region) -> Option<PathBuf> {
+    if let Some(p) = windows_running_workbuddy_exe(region) {
+        persist_workbuddy_exe(region, &p);
         return Some(p);
     }
 
-    if let Some(cached) = config::load_workbuddy_exe_cache() {
+    if let Some(cached) = config::load_workbuddy_exe_cache_for(region) {
         if is_existing_workbuddy_exe(&cached) {
             return Some(cached);
         }
-        config::clear_workbuddy_exe_cache();
+        config::clear_workbuddy_exe_cache_for(region);
     }
 
-    for p in windows_registry_exe_candidates() {
+    for p in windows_registry_exe_candidates(region) {
         if is_existing_workbuddy_exe(&p) {
-            persist_workbuddy_exe(&p);
+            persist_workbuddy_exe(region, &p);
             return Some(p);
         }
     }
@@ -523,10 +549,11 @@ pub fn windows_workbuddy_exe_path() -> Option<PathBuf> {
         pf86.as_deref(),
         user.as_deref(),
         &drives,
+        region,
     );
     for p in candidates {
         if is_existing_workbuddy_exe(&p) {
-            persist_workbuddy_exe(&p);
+            persist_workbuddy_exe(region, &p);
             return Some(p);
         }
     }
@@ -534,9 +561,16 @@ pub fn windows_workbuddy_exe_path() -> Option<PathBuf> {
 }
 
 
-/// WorkBuddy 是否在运行。
+/// 任意区域的 WorkBuddy 客户端是否在运行。
 pub fn is_workbuddy_running() -> bool {
-    !windows_workbuddy_process_rows().is_empty()
+    Region::ALL
+        .iter()
+        .any(|region| !windows_workbuddy_process_rows(*region).is_empty())
+}
+
+/// 指定区域的 WorkBuddy 客户端是否在运行。
+pub fn is_workbuddy_running_for(region: Region) -> bool {
+    !windows_workbuddy_process_rows(region).is_empty()
 }
 
 /// 轮询等待 WorkBuddy 进程全部退出，返回是否已退出。对照 `_wait_process_gone`。
@@ -551,14 +585,14 @@ pub fn wait_process_gone(timeout_secs: f64) -> bool {
     !is_workbuddy_running()
 }
 
-/// 关闭 WorkBuddy：优雅退出 → 超时后强杀 → 确认进程消失。对照 `close_workbuddy`。
-pub fn close_workbuddy(timeout_secs: i64) -> Result<(), String> {
-    close_workbuddy_windows(timeout_secs)
+/// 关闭指定区域的 WorkBuddy 客户端：优雅退出 → 超时后强杀 → 确认进程消失。
+pub fn close_workbuddy(region: Region, timeout_secs: i64) -> Result<(), String> {
+    close_workbuddy_windows(region, timeout_secs)
 }
 
 /// 先对目标 PID `taskkill /PID /T`（无 /F），超时再 `/F`；按 PID 等待，不按名称子串。
-fn close_workbuddy_windows(timeout_secs: i64) -> Result<(), String> {
-    let rows = windows_workbuddy_process_rows();
+fn close_workbuddy_windows(region: Region, timeout_secs: i64) -> Result<(), String> {
+    let rows = windows_workbuddy_process_rows(region);
     if rows.is_empty() {
         return Ok(());
     }
@@ -587,35 +621,43 @@ fn close_workbuddy_windows(timeout_secs: i64) -> Result<(), String> {
     if leftover.is_empty() {
         return Ok(());
     }
-    Err("WorkBuddy 进程无法关闭，请手动结束 WorkBuddy/CodeBuddy 进程".to_string())
+    let label = match region {
+        Region::Cn => "WorkBuddy/CodeBuddy",
+        Region::Intl => "WorkBuddy AI",
+    };
+    Err(format!("{label} 进程无法关闭，请手动结束对应客户端进程"))
 }
 
-/// 启动 WorkBuddy。失败返回可读错误。对照 `launch_workbuddy`。
+/// 启动指定区域的 WorkBuddy 客户端。失败返回可读错误。对照 `launch_workbuddy`。
 ///
 /// progress 参数已被忽略，保留签名以兼容既有调用点。
-pub fn launch_workbuddy(progress: Option<&dyn Fn(&str)>) -> Result<(), String> {
+pub fn launch_workbuddy(region: Region, progress: Option<&dyn Fn(&str)>) -> Result<(), String> {
     let _ = progress;
-    let app = auth_file::workbuddy_app_path();
+    let app = auth_file::workbuddy_app_path_for(region);
     let exe = if app
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
     {
         app.clone()
     } else {
-        app.join("WorkBuddy.exe")
+        app.join(format!("{}.exe", region_image_stems(region)[0]))
     };
     if !exe.exists() {
+        let label = match region {
+            Region::Cn => "WorkBuddy",
+            Region::Intl => "WorkBuddy AI",
+        };
         return Err(format!(
-            "未找到 WorkBuddy 程序（尝试路径: {}）。请在 Windows 上打开 WorkBuddy 后重试。",
+            "未找到 {label} 程序（尝试路径: {}）。请在 Windows 上打开对应客户端后重试。",
             exe.display()
         ));
     }
-    persist_workbuddy_exe(&exe);
+    persist_workbuddy_exe(region, &exe);
     cmd_builder(&exe)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("启动 WorkBuddy 失败: {e}（路径: {}）", exe.display()))?;
+        .map_err(|e| format!("启动客户端失败: {e}（路径: {}）", exe.display()))?;
     Ok(())
 }
 
@@ -641,13 +683,23 @@ mod tests {
         assert!(is_workbuddy_image_name("workbuddy"));
         assert!(is_workbuddy_image_name("CodeBuddy.exe"));
         assert!(is_workbuddy_image_name("CODEBUDDY"));
+        assert!(is_workbuddy_image_name("WorkBuddyAI.exe"));
+        assert!(is_workbuddy_image_name("workbuddyai"));
         assert!(!is_workbuddy_image_name("workbuddy-switch.exe"));
         assert!(!is_workbuddy_image_name("wb-switch"));
         assert!(!is_workbuddy_image_name("WorkBuddy Helper.exe"));
         assert!(!is_workbuddy_image_name("MyWorkBuddy.exe"));
+        // 区域隔离：国际版映像不参与国服区域匹配，反之亦然。
+        assert!(is_region_image_name("WorkBuddy.exe", Region::Cn));
+        assert!(!is_region_image_name("WorkBuddyAI.exe", Region::Cn));
+        assert!(is_region_image_name("WorkBuddyAI.exe", Region::Intl));
+        assert!(!is_region_image_name("WorkBuddy.exe", Region::Intl));
         assert!(is_workbuddy_exe_file_name(Path::new("WorkBuddy.exe")));
         assert!(is_workbuddy_exe_file_name(Path::new(
             r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe"
+        )));
+        assert!(is_workbuddy_exe_file_name(Path::new(
+            r"E:\WorkBuddyAI\WorkBuddyAI.exe"
         )));
         assert!(!is_workbuddy_exe_file_name(Path::new(
             "workbuddy-switch.exe"
@@ -684,6 +736,7 @@ mod tests {
             Some(r"C:\Program Files (x86)"),
             Some("Zhou"),
             &['C', 'D'],
+            Region::Cn,
         );
         let want = r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe";
         assert!(
@@ -703,6 +756,35 @@ mod tests {
     }
 
     #[test]
+    fn fallback_candidates_cover_intl_workbuddy_ai() {
+        let cands = windows_fallback_exe_candidates(
+            Some(r"C:\Users\Zhou\AppData\Local"),
+            None,
+            None,
+            Some("Zhou"),
+            &['C', 'E'],
+            Region::Intl,
+        );
+        // 国际版客户端：本地安装目录 + 盘符根目录（安装器允许自定义路径，如 E:\WorkBuddyAI）。
+        for want in [
+            r"C:\Users\Zhou\AppData\Local\Programs\WorkBuddyAI\WorkBuddyAI.exe",
+            r"E:\WorkBuddyAI\WorkBuddyAI.exe",
+        ] {
+            assert!(
+                cands.iter().any(|p| p.to_string_lossy() == want),
+                "missing {want} in {cands:?}"
+            );
+        }
+        // 国际版候选不得包含国服映像名。
+        assert!(
+            !cands
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(r"\WorkBuddy.exe")),
+            "intl candidates must not contain WorkBuddy.exe: {cands:?}"
+        );
+    }
+
+    #[test]
     fn process_rows_drop_self_and_crashpad() {
         let stdout = "\
 1001|workbuddy-switch|C:\\apps\\workbuddy-switch.exe
@@ -712,22 +794,31 @@ mod tests {
 1005|CodeBuddy|
 1006|WorkBuddy Helper|
 ";
-        let kept = filter_windows_workbuddy_rows(&parse_windows_process_rows(stdout));
+        let kept = filter_windows_workbuddy_rows(&parse_windows_process_rows(stdout), Region::Cn);
         let pids: Vec<u32> = kept.iter().map(|r| r.pid).collect();
         assert_eq!(pids, vec![1003, 1005]);
+
+        // 国际版区域只保留 WorkBuddyAI 进程。
+        let intl_stdout = "\
+2001|WorkBuddy|C:\\Users\\Zhou\\AppData\\Local\\Programs\\WorkBuddy\\WorkBuddy.exe
+2002|WorkBuddyAI|E:\\WorkBuddyAI\\WorkBuddyAI.exe
+";
+        let kept = filter_windows_workbuddy_rows(&parse_windows_process_rows(intl_stdout), Region::Intl);
+        let pids: Vec<u32> = kept.iter().map(|r| r.pid).collect();
+        assert_eq!(pids, vec![2002]);
     }
 
     #[test]
     fn only_switcher_process_is_not_workbuddy_running() {
         let stdout = "4400|workbuddy-switch.exe|C:\\Users\\Zhou\\AppData\\Local\\Programs\\wb-switch\\workbuddy-switch.exe\n";
-        let kept = filter_windows_workbuddy_rows(&parse_windows_process_rows(stdout));
+        let kept = filter_windows_workbuddy_rows(&parse_windows_process_rows(stdout), Region::Cn);
         assert!(kept.is_empty());
 
         let csv = "\
 \"workbuddy-switch.exe\",\"4400\",\"Console\",\"1\",\"10,000 K\"
 \"wb-switch.exe\",\"4401\",\"Console\",\"1\",\"8,000 K\"
 ";
-        let kept = filter_windows_workbuddy_rows(&parse_tasklist_csv(csv));
+        let kept = filter_windows_workbuddy_rows(&parse_tasklist_csv(csv), Region::Cn);
         assert!(kept.is_empty());
     }
 
@@ -738,27 +829,46 @@ mod tests {
 \"workbuddy-switch.exe\",\"4400\",\"Console\",\"1\",\"10,000 K\"
 INFO: No tasks are running which match the specified criteria.
 ";
-        let kept = filter_windows_workbuddy_rows(&parse_tasklist_csv(csv));
+        let kept = filter_windows_workbuddy_rows(&parse_tasklist_csv(csv), Region::Cn);
         assert_eq!(kept.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![1234]);
+
+        let intl_csv = "\
+\"WorkBuddyAI.exe\",\"7777\",\"Console\",\"1\",\"50,123 K\"
+\"WorkBuddy.exe\",\"1234\",\"Console\",\"1\",\"50,123 K\"
+";
+        let kept = filter_windows_workbuddy_rows(&parse_tasklist_csv(intl_csv), Region::Intl);
+        assert_eq!(kept.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![7777]);
     }
 
     #[test]
     fn registry_lines_parse_display_icon_and_skip_self() {
         let stdout = r#"
 "D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe,0"
+C:\Users\Zhou\AppData\Local\Programs\CodeBuddy\CodeBuddy.exe
 C:\Users\Zhou\AppData\Local\Programs\workbuddy-switch\workbuddy-switch.exe
+"E:\WorkBuddyAI\WorkBuddyAI.exe",0
 D:\Program Files\WorkBuddy\Uninstall.exe
-D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
 "#;
-        let paths = parse_windows_registry_path_lines(stdout);
-        let s: Vec<String> = paths
+        let cn = parse_windows_registry_path_lines(stdout, Region::Cn);
+        let s: Vec<String> = cn
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         assert_eq!(
             s,
-            vec![r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe".to_string(),]
+            vec![
+                r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe".to_string(),
+                r"C:\Users\Zhou\AppData\Local\Programs\CodeBuddy\CodeBuddy.exe".to_string(),
+            ]
         );
+
+        // 国际版区域只解析 WorkBuddyAI 条目，不混入国服客户端。
+        let intl = parse_windows_registry_path_lines(stdout, Region::Intl);
+        let s: Vec<String> = intl
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(s, vec![r"E:\WorkBuddyAI\WorkBuddyAI.exe".to_string()]);
     }
 
 }

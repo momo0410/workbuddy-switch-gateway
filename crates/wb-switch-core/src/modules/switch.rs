@@ -41,7 +41,7 @@ pub fn switch_account(
     let mut session_report: Option<Value> = None;
     if restart {
         progress("正在关闭 WorkBuddy…");
-        close_workbuddy(20)?;
+        close_workbuddy(region, 20)?;
         // 只有重启场景才做会话操作（数据库在运行中不宜写入）
         if !copy_session_ids.is_empty() {
             progress("正在复制会话到目标账号…");
@@ -56,7 +56,7 @@ pub fn switch_account(
     auth_file::write_account_to_auth_file(&acc)?;
     if restart {
         progress("正在启动 WorkBuddy…");
-        launch_workbuddy(Some(&progress))?;
+        launch_workbuddy(region, Some(&progress))?;
     }
     progress("切换完成");
 

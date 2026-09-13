@@ -356,7 +356,9 @@ async fn post_with_account(account: &Value, url: &str, body: Value) -> Value {
 }
 
 fn request_origin(url: &str) -> &'static str {
-    if url.starts_with(WORKBUDDY_WEB_ENDPOINT) {
+    if url.starts_with(WORKBUDDY_API_ENDPOINT_INTL) {
+        WORKBUDDY_API_ENDPOINT_INTL
+    } else if url.starts_with(WORKBUDDY_WEB_ENDPOINT) {
         WORKBUDDY_WEB_ENDPOINT
     } else {
         WORKBUDDY_API_ENDPOINT
@@ -431,6 +433,25 @@ fn new_resource_endpoint(account: &Value) -> &'static str {
 
 fn new_resource_url(account: &Value, path: &str) -> String {
     format!("{}{path}", new_resource_endpoint(account))
+}
+
+/// 官方请求用量接口的 URL：域名跟随账号区域。
+///
+/// 用量接口挂在 Web 域（国服 `www.workbuddy.cn` / 国际版 `www.workbuddy.ai`），
+/// 与资源接口的取值不同 —— 国服凭据对 workbuddy.cn 生效，而把国际版凭据
+/// 发往国服域名会被网关直接返回 401（openresty）。
+pub fn official_usage_url(account: &Value) -> String {
+    let endpoint = match account
+        .get("domain")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        d if d.is_some_and(|s| s.ends_with(".ai")) => WORKBUDDY_API_ENDPOINT_INTL,
+        _ => WORKBUDDY_WEB_ENDPOINT,
+    };
+    format!("{endpoint}/billing/meter/get-user-request-usage")
 }
 
 struct NewResourceResponses {
@@ -1001,10 +1022,41 @@ mod tests {
             Some("https://www.codebuddy.cn/profile/plans-usage")
         );
 
-        // 官方用量 URL 固定 workbuddy.cn，Origin 必须跟请求 host，X-Domain 仍用账号域。
-        let usage_url = "https://www.workbuddy.cn/billing/meter/get-user-request-usage";
-        assert_eq!(request_origin(usage_url), WORKBUDDY_WEB_ENDPOINT);
-        let usage_headers = resource_auth_headers(&codebuddy, request_origin(usage_url));
+        // 官方用量 URL 跟随账号区域：国服 workbuddy.cn、国际版 workbuddy.ai。
+        let intl = json!({
+            "domain": "www.workbuddy.ai",
+            "access_token": "redacted",
+            "uid": "u3"
+        });
+        assert_eq!(
+            official_usage_url(&workbuddy),
+            "https://www.workbuddy.cn/billing/meter/get-user-request-usage"
+        );
+        assert_eq!(
+            official_usage_url(&intl),
+            "https://www.workbuddy.ai/billing/meter/get-user-request-usage"
+        );
+        assert_eq!(
+            official_usage_url(&unknown),
+            "https://www.workbuddy.cn/billing/meter/get-user-request-usage"
+        );
+
+        // Origin/Referer 跟请求 host：国际版请求不能带 codebuddy.cn 的 Origin。
+        let intl_usage_url = official_usage_url(&intl);
+        assert_eq!(request_origin(&intl_usage_url), WORKBUDDY_API_ENDPOINT_INTL);
+        let intl_usage_headers = resource_auth_headers(&intl, request_origin(&intl_usage_url));
+        assert_eq!(
+            intl_usage_headers.get("Origin").map(String::as_str),
+            Some("https://www.workbuddy.ai")
+        );
+        assert_eq!(
+            intl_usage_headers.get("X-Domain").map(String::as_str),
+            Some("www.workbuddy.ai")
+        );
+
+        let usage_url = official_usage_url(&codebuddy);
+        assert_eq!(request_origin(&usage_url), WORKBUDDY_WEB_ENDPOINT);
+        let usage_headers = resource_auth_headers(&codebuddy, request_origin(&usage_url));
         assert_eq!(
             usage_headers.get("Origin").map(String::as_str),
             Some("https://www.workbuddy.cn")

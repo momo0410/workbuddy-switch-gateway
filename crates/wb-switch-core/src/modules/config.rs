@@ -207,8 +207,12 @@ pub fn auto_rotate_logs_file() -> PathBuf {
     store_dir().join("auto_rotate_logs.json")
 }
 
-pub fn workbuddy_exe_cache_file() -> PathBuf {
-    store_dir().join("workbuddy_exe.json")
+/// WorkBuddy 客户端 exe 缓存文件（按区域各一份：国服 / 国际版）。
+pub fn workbuddy_exe_cache_file_for(region: Region) -> PathBuf {
+    match region {
+        Region::Cn => store_dir().join("workbuddy_exe.json"),
+        Region::Intl => store_dir().join("workbuddy_ai_exe.json"),
+    }
 }
 
 fn parse_workbuddy_exe_cache_json(text: &str) -> Option<PathBuf> {
@@ -221,9 +225,9 @@ fn parse_workbuddy_exe_cache_json(text: &str) -> Option<PathBuf> {
     }
 }
 
-/// 读取上次成功解析到的 WorkBuddy.exe；损坏或空文件视为无缓存。
-pub fn load_workbuddy_exe_cache() -> Option<PathBuf> {
-    let f = workbuddy_exe_cache_file();
+/// 读取上次成功解析到的 WorkBuddy 客户端 exe；损坏或空文件视为无缓存。
+pub fn load_workbuddy_exe_cache_for(region: Region) -> Option<PathBuf> {
+    let f = workbuddy_exe_cache_file_for(region);
     if !f.exists() {
         return None;
     }
@@ -231,16 +235,16 @@ pub fn load_workbuddy_exe_cache() -> Option<PathBuf> {
     parse_workbuddy_exe_cache_json(&text)
 }
 
-/// 记住已存在的 WorkBuddy.exe，供下次未运行时启动。
-pub fn save_workbuddy_exe_cache(exe: &Path) -> std::io::Result<()> {
+/// 记住已存在的客户端 exe，供下次未运行时启动。
+pub fn save_workbuddy_exe_cache_for(region: Region, exe: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(store_dir())?;
     let content =
         serde_json::to_string_pretty(&json!({ "exe": exe.to_string_lossy() })).unwrap_or_default();
-    atomic_write(&workbuddy_exe_cache_file(), &content)
+    atomic_write(&workbuddy_exe_cache_file_for(region), &content)
 }
 
-pub fn clear_workbuddy_exe_cache() {
-    let _ = std::fs::remove_file(workbuddy_exe_cache_file());
+pub fn clear_workbuddy_exe_cache_for(region: Region) {
+    let _ = std::fs::remove_file(workbuddy_exe_cache_file_for(region));
 }
 
 pub fn codebuddy_cn_app_cache_file() -> PathBuf {
@@ -1142,11 +1146,19 @@ mod tests {
     fn codebuddy_cn_app_cache_file_is_not_workbuddy_exe_cache() {
         assert_ne!(
             codebuddy_cn_app_cache_file(),
-            workbuddy_exe_cache_file()
+            workbuddy_exe_cache_file_for(Region::Cn)
         );
         assert!(codebuddy_cn_app_cache_file()
             .file_name()
             .is_some_and(|n| n == "codebuddy_cn_app.json"));
+        // 国服与国际版各自独立的 exe 缓存文件，互不覆盖。
+        assert_ne!(
+            workbuddy_exe_cache_file_for(Region::Cn),
+            workbuddy_exe_cache_file_for(Region::Intl)
+        );
+        assert!(workbuddy_exe_cache_file_for(Region::Intl)
+            .file_name()
+            .is_some_and(|n| n == "workbuddy_ai_exe.json"));
     }
 
     #[test]
