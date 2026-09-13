@@ -1162,6 +1162,40 @@ pub async fn switch_mode(mode: GatewayMode, pinned_uid: Option<String>) -> Value
     })
 }
 
+/// 从运行中的网关动态拉取上游模型列表。仅从网关实时获取，不使用内置静态模型。
+pub async fn fetch_models() -> Vec<Value> {
+    let cfg = load_gateway_config();
+    let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(7863) as u16;
+    let api_key = cfg
+        .get("api_key")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let url = format!("http://127.0.0.1:{port}/v1/models");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(2000))
+        .build();
+
+    if let Ok(c) = client {
+        let mut req = c.get(&url);
+        if !api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {api_key}"));
+        }
+        if let Ok(resp) = req.send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<Value>().await {
+                    if let Some(arr) = json.get("data").and_then(Value::as_array) {
+                        return arr.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

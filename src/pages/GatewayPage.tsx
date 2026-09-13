@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Copy,
   Loader2,
@@ -23,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import type {
@@ -685,16 +688,49 @@ export default function GatewayPage() {
         )}
       </Section>
 
-      <Section title="客户端接入">
-        <div className="space-y-2 px-4 py-3 sm:px-5">
-          <pre className="overflow-x-auto rounded-lg bg-muted/50 px-3 py-2 text-[11px] leading-relaxed">
-            <code>{endpointHint || "OPENAI_BASE_URL=http://127.0.0.1:7863/v1"}
+      <Section title="客户端接入" description="把网关接入本机已安装的 AI 客户端，或按标准环境变量接入">
+        <div className="space-y-4 p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs">
+            <div className="flex items-center gap-2">
+              <Bot className="size-4 text-primary shrink-0" />
+              <span>现已提供独立的「智能体管理」页面，支持 11 类智能体的多模型多选与一键批量更新。</span>
+            </div>
+            <Button size="sm" variant="outline" className="h-7 text-xs font-medium" asChild>
+              <Link to="/agents">前往智能体管理 →</Link>
+            </Button>
+          </div>
+
+          <Separator className="my-1" />
+
+          <div>
+            <h3 className="text-[13px] font-medium leading-5">手动环境变量配置</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              如需在其他第三方工具、SDK 或自建服务中使用网关，可设置以下环境变量：
+            </p>
+            <div className="mt-2.5 space-y-2.5">
+              <div>
+                <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                  OpenAI 兼容接口（/v1/chat/completions 与 /v1/models）
+                </div>
+                <pre className="overflow-x-auto rounded-lg bg-muted/50 px-3 py-2 text-[11px] leading-relaxed">
+                  <code>{endpointHint || "OPENAI_BASE_URL=http://127.0.0.1:7863/v1"}
 {`OPENAI_API_KEY=${apiKey || "<你的 api_key>"}`}</code>
-          </pre>
-          <p className="text-[11px] text-muted-foreground">
-            支持 <code className="font-mono">/v1/chat/completions</code>（流式与非流式）与{" "}
-            <code className="font-mono">/v1/models</code>，现有 OpenAI SDK 可直接接入。
-          </p>
+                </pre>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                  Anthropic Messages 接口（Claude Code 与 Claude Desktop，/v1/messages）
+                </div>
+                <pre className="overflow-x-auto rounded-lg bg-muted/50 px-3 py-2 text-[11px] leading-relaxed">
+                  <code>{`ANTHROPIC_BASE_URL=http://127.0.0.1:${port || 7863}
+ANTHROPIC_AUTH_TOKEN=${apiKey || "<你的 api_key>"}`}</code>
+                </pre>
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              同时支持 <code className="font-mono">POST /v1/responses</code>（兼容新版 Codex CLI 0.146+），现有主流 AI 客户端均可零改造对接。
+            </p>
+          </div>
         </div>
       </Section>
 

@@ -17,10 +17,16 @@ import type {
   TokenStatistics,
   AccountRegionKey,
   CopyResult,
+  AgentBackupItem,
+  AgentBatchImportResult,
+  AgentDetectionResult,
+  AgentImportResult,
+  AgentRestoreResult,
   GatewayConfig,
   GatewayConfigResult,
   GatewayMode,
   GatewayModeSwitchResult,
+  GatewayModelItem,
   GatewayStartResult,
   GatewayStatus,
   GatewayPortCheck,
@@ -135,6 +141,13 @@ const ROUTES: Record<string, Route> = {
   stop_gateway: { method: "POST", path: "/api/gateway/stop" },
   restart_gateway: { method: "POST", path: "/api/gateway/restart" },
   sync_gateway_accounts: { method: "POST", path: "/api/gateway/sync" },
+  get_gateway_models: { method: "GET", path: "/api/gateway/models" },
+  // ---- 一键导入：接入本机 AI 客户端 ----
+  detect_agent_clients: { method: "GET", path: "/api/gateway/agents" },
+  import_agent_client: { method: "POST", path: "/api/gateway/agents/import" },
+  batch_import_agent_clients: { method: "POST", path: "/api/gateway/agents/batch-import" },
+  restore_agent_client: { method: "POST", path: "/api/gateway/agents/restore" },
+  list_agent_backups: { method: "GET", path: "/api/gateway/agents/backups" },
 };
 
 function queryString(args?: Record<string, unknown>): string {
@@ -604,3 +617,62 @@ export function switchGatewayMode(
     pinnedUid: pinnedUid ?? null,
   });
 }
+
+// ---------------------------------------------------------------------------
+// 一键导入：接入本机 AI 客户端
+// ---------------------------------------------------------------------------
+
+/** 获取网关可用模型列表（优先动态查询网关，网关未就绪时回退静态并集）。 */
+export async function getGatewayModels(): Promise<GatewayModelItem[]> {
+  const res = await call<{ models?: GatewayModelItem[] }>("get_gateway_models");
+  return res.models ?? [];
+}
+
+/** 探测本机 AI 客户端（全部 11 类智能体）的安装与配置状态。 */
+export function detectAgentClients(): Promise<AgentDetectionResult> {
+  return call<AgentDetectionResult>("detect_agent_clients");
+}
+
+/** 将本网关配置一键接入指定的客户端（支持单模型或多选模型）。 */
+export function importAgentClient(
+  target: string,
+  models?: string[] | string,
+): Promise<AgentImportResult> {
+  const modelList = Array.isArray(models)
+    ? models
+    : typeof models === "string" && models.trim()
+      ? [models.trim()]
+      : undefined;
+  return call<AgentImportResult>("import_agent_client", {
+    target,
+    models: modelList,
+    model: modelList?.[0],
+  });
+}
+
+/** 批量一键接入/更新多个客户端。若不传 targets，则自动更新所有已检测到安装的客户端。 */
+export function batchImportAgentClients(
+  targets?: string[],
+  models?: string[],
+): Promise<AgentBatchImportResult> {
+  return call<AgentBatchImportResult>("batch_import_agent_clients", {
+    targets,
+    models,
+  });
+}
+
+/** 回滚指定客户端至导入前的配置备份。 */
+export function restoreAgentClient(
+  target: string,
+  backupId?: string,
+): Promise<AgentRestoreResult> {
+  return call<AgentRestoreResult>("restore_agent_client", { target, backupId });
+}
+
+/** 查询指定客户端的历史配置备份列表。 */
+export function listAgentBackups(
+  target: string,
+): Promise<{ backups: AgentBackupItem[] }> {
+  return call<{ backups: AgentBackupItem[] }>("list_agent_backups", { target });
+}
+

@@ -26,19 +26,26 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port: 14200,
     strictPort: true,
-    host: host || false,
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 14201,
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 忽略 Rust 构建产物、后端源码与 Git 目录，避免 Windows 下文件锁冲突 (EBUSY)
+      ignored: [
+        "**/src-tauri/**",
+        "**/target/**",
+        "**/crates/**",
+        "**/go-gateway/**",
+        "**/.git/**",
+        "**/scripts/**",
+      ],
     },
   },
 }));

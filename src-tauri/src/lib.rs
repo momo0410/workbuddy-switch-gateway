@@ -204,6 +204,13 @@ pub fn run() {
             commands::stop_gateway,
             commands::restart_gateway,
             commands::sync_gateway_accounts,
+            // 一键导入：接入本机 AI 客户端
+            commands::detect_agent_clients,
+            commands::get_gateway_models,
+            commands::import_agent_client,
+            commands::batch_import_agent_clients,
+            commands::restore_agent_client,
+            commands::list_agent_backups,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

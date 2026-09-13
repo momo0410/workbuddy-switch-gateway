@@ -350,7 +350,7 @@ export interface CreditStatistics {
 
 export interface TokenStatsTotals { total: number; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; records: number; cacheHitRate: number | null; }
 export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?: string | null; project?: string; sessionId?: string; }
-export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
+export interface TokenStatsSource { source: "workbuddy" | "workbuddy-ai" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
 
 export interface CodeBuddyCliStatus {
@@ -581,3 +581,82 @@ export interface GatewayPortCheck {
   /** 端口被占用时给出的可用建议端口。 */
   suggest: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// 智能体客户端一键导入（agent_import）
+// ---------------------------------------------------------------------------
+
+/** 单个 AI 客户端的探测状态。 */
+export interface AgentClientTarget {
+  /** 客户端标识：dsh / claude-code / claude-desktop / codex */
+  id: string;
+  /** 显示名称 */
+  label: string;
+  /** 是否检测到已安装 */
+  installed: boolean;
+  /** 是否已接入本网关 */
+  configured: boolean;
+  /** 主要配置文件的绝对路径 */
+  configPath: string;
+  /** 补充说明信息 */
+  note: string;
+  /** 探测到的版本号 */
+  version?: string | null;
+}
+
+/** GET /api/gateway/agents 探测响应。 */
+export interface AgentDetectionResult {
+  /** 本机网关根地址，如 http://127.0.0.1:7863 */
+  base: string;
+  /** 网关配置中是否已设置 API Key */
+  hasApiKey: boolean;
+  /** 探测到的客户端列表 */
+  targets: AgentClientTarget[];
+}
+
+/** 网关模型项。 */
+export interface GatewayModelItem {
+  id: string;
+  name?: string;
+  context_length?: number;
+  max_output_tokens?: number;
+  owned_by?: string;
+}
+
+/** POST /api/gateway/agents/import 接入响应。 */
+export interface AgentImportResult {
+  ok: boolean;
+  target: string;
+  backupDir: string;
+  files: string[];
+  models?: string[];
+  model?: string;
+}
+
+/** 批量接入/一键更新响应。 */
+export interface AgentBatchImportResult {
+  ok: boolean;
+  count: number;
+  outcomes: Array<{
+    target: string;
+    backupDir: string;
+    files: string[];
+    models?: string[];
+  }>;
+  models: string[];
+}
+
+/** POST /api/gateway/agents/restore 恢复响应。 */
+export interface AgentRestoreResult {
+  ok: boolean;
+  restored: number;
+  backupId: string;
+}
+
+/** 备份记录项。 */
+export interface AgentBackupItem {
+  id: string;
+  createdAt: number;
+  path: string;
+}
+

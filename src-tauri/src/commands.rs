@@ -735,3 +735,146 @@ pub async fn restart_gateway() -> Result<Value, String> {
 pub async fn sync_gateway_accounts(auto_reload: Option<bool>) -> Result<Value, String> {
     Ok(wb_switch_core::modules::gateway::sync_and_reload(auto_reload.unwrap_or(true)).await)
 }
+
+// ---------------------------------------------------------------------------
+// 一键导入：把本网关接入本机已安装的 AI 客户端
+// ---------------------------------------------------------------------------
+
+/// 网关根地址（不带 /v1），供客户端配置使用。
+fn gateway_root_base() -> (String, String, u16) {
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(7863) as u16;
+    let api_key = cfg
+        .get("api_key")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (format!("http://127.0.0.1:{port}"), api_key, port)
+}
+
+/// 探测全部目标客户端的安装与配置状态。
+#[tauri::command]
+pub fn detect_agent_clients() -> Result<Value, String> {
+    let (base, api_key, _) = gateway_root_base();
+    let targets = wb_switch_core::modules::agent_import::detect_all(&base, &api_key);
+    Ok(json!({
+        "base": base,
+        "hasApiKey": !api_key.is_empty(),
+        "targets": targets.iter().map(|t| json!({
+            "id": t.id,
+            "label": t.label,
+            "installed": t.installed,
+            "configured": t.configured,
+            "configPath": t.config_path,
+            "note": t.note,
+            "version": t.version,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// 获取网关模型列表（优先从运行中的网关拉取，失败回退预置列表）。
+#[tauri::command]
+pub async fn get_gateway_models() -> Result<Value, String> {
+    Ok(json!({
+        "models": wb_switch_core::modules::gateway::fetch_models().await,
+    }))
+}
+
+/// 把网关接入指定客户端（写配置 + 自动备份，支持多模型）。
+#[tauri::command(rename_all = "camelCase")]
+pub fn import_agent_client(
+    target: String,
+    model: Option<String>,
+    models: Option<Vec<String>>,
+) -> Result<Value, String> {
+    let (base, api_key, _) = gateway_root_base();
+    if api_key.trim().is_empty() {
+        return Err("请先在网关设置里填写 API Key：客户端需要凭据才能鉴权".to_string());
+    }
+    let model_list = match models {
+        Some(list) if !list.is_empty() => list,
+        _ => match model.filter(|m| !m.trim().is_empty()) {
+            Some(m) => vec![m],
+            None => vec![default_gateway_model()],
+        },
+    };
+
+    let outcome = wb_switch_core::modules::agent_import::import_target(
+        &target, &base, &api_key, &model_list,
+    )?;
+    Ok(json!({
+        "ok": true,
+        "target": outcome.target,
+        "backupDir": outcome.backup_dir,
+        "files": outcome.files,
+        "models": outcome.models,
+    }))
+}
+
+/// 批量接入/一键更新多个客户端配置。
+#[tauri::command(rename_all = "camelCase")]
+pub fn batch_import_agent_clients(
+    targets: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+) -> Result<Value, String> {
+    let (base, api_key, _) = gateway_root_base();
+    if api_key.trim().is_empty() {
+        return Err("请先在网关设置里填写 API Key：客户端需要凭据才能鉴权".to_string());
+    }
+
+    let model_list = match models {
+        Some(list) if !list.is_empty() => list,
+        _ => vec![default_gateway_model()],
+    };
+
+    let outcomes = match targets {
+        Some(ids) if !ids.is_empty() => {
+            wb_switch_core::modules::agent_import::import_targets(&ids, &base, &api_key, &model_list)?
+        }
+        _ => {
+            wb_switch_core::modules::agent_import::import_all_installed(&base, &api_key, &model_list)?
+        }
+    };
+
+    Ok(json!({
+        "ok": true,
+        "count": outcomes.len(),
+        "outcomes": outcomes.iter().map(|o| json!({
+            "target": o.target,
+            "backupDir": o.backup_dir,
+            "files": o.files,
+            "models": o.models,
+        })).collect::<Vec<_>>(),
+        "models": model_list,
+    }))
+}
+
+/// 回滚某个客户端到导入前的配置。
+#[tauri::command(rename_all = "camelCase")]
+pub fn restore_agent_client(target: String, backup_id: Option<String>) -> Result<Value, String> {
+    let backups = wb_switch_core::modules::agent_import::list_backups(&target);
+    let id = match backup_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => backups
+            .first()
+            .and_then(|b| b.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("没有找到 {target} 的备份记录"))?
+            .to_string(),
+    };
+    let restored = wb_switch_core::modules::agent_import::restore_backup(&target, &id)?;
+    Ok(json!({ "ok": true, "restored": restored, "backupId": id }))
+}
+
+/// 列出某个客户端的历史备份。
+#[tauri::command]
+pub fn list_agent_backups(target: String) -> Result<Value, String> {
+    Ok(json!({
+        "backups": wb_switch_core::modules::agent_import::list_backups(&target),
+    }))
+}
+
+/// 默认模型：优先取网关模型列表的第一项，失败时回退到静态表首项。
+fn default_gateway_model() -> String {
+    "deepseek-v4-flash".to_string()
+}

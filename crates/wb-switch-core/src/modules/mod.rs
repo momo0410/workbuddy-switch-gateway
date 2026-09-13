@@ -1,4 +1,5 @@
 pub mod account;
+pub mod agent_import;
 pub mod auth_file;
 pub mod checkin;
 pub mod codebuddy_cli;
@@ -20,3 +21,4 @@ pub mod token_stats;
 pub mod travel;
 pub mod update;
 pub mod vscode_cn_inject;
+pub mod yaml_lite;

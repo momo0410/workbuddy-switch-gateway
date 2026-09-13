@@ -106,6 +106,13 @@ pub fn router() -> Router {
         .route("/api/gateway/stop", post(api_gateway_stop))
         .route("/api/gateway/sync", post(api_gateway_sync))
         .route("/api/gateway/restart", post(api_gateway_restart))
+        .route("/api/gateway/models", get(api_gateway_models))
+        // ---- 一键导入：接入本机 AI 客户端 ----
+        .route("/api/gateway/agents", get(api_agents_detect))
+        .route("/api/gateway/agents/import", post(api_agents_import))
+        .route("/api/gateway/agents/batch-import", post(api_agents_batch_import))
+        .route("/api/gateway/agents/restore", post(api_agents_restore))
+        .route("/api/gateway/agents/backups", get(api_agents_backups))
         .route("/api/update/check", get(api_update_check))
         .route(
             "/api/update/config",
@@ -813,4 +820,203 @@ async fn api_gateway_port_check(Json(body): Json<Value>) -> Response {
         return json_err("端口号需在 1-65535 之间".to_string(), StatusCode::BAD_REQUEST);
     }
     json_ok(wb_switch_core::modules::gateway::inspect_port(port as u16))
+}
+
+// ---------------------------------------------------------------------------
+// 一键导入：接入本机 AI 客户端
+// ---------------------------------------------------------------------------
+
+/// 读取网关根地址（不带 /v1）与 API Key。
+fn gateway_root_and_key() -> (String, String) {
+    let cfg = wb_switch_core::modules::gateway::load_gateway_config();
+    let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(7863);
+    let api_key = cfg
+        .get("api_key")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (format!("http://127.0.0.1:{port}"), api_key)
+}
+
+/// GET /api/gateway/models —— 返回网关支持的模型列表（优先动态查询）。
+async fn api_gateway_models() -> Response {
+    json_ok(json!({
+        "models": wb_switch_core::modules::gateway::fetch_models().await,
+    }))
+}
+
+/// GET /api/gateway/agents —— 探测全部客户端的安装与配置状态。
+async fn api_agents_detect() -> Response {
+    let (base, api_key) = gateway_root_and_key();
+    let targets = wb_switch_core::modules::agent_import::detect_all(&base, &api_key);
+    json_ok(json!({
+        "base": base,
+        "hasApiKey": !api_key.is_empty(),
+        "targets": targets.iter().map(|t| json!({
+            "id": t.id,
+            "label": t.label,
+            "installed": t.installed,
+            "configured": t.configured,
+            "configPath": t.config_path,
+            "note": t.note,
+            "version": t.version,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// POST /api/gateway/agents/import —— 把网关接入指定客户端（支持多模型）。
+///
+/// body: { "target": "codex", "models": ["glm-5.2", "deepseek-v4-flash"] }
+async fn api_agents_import(Json(body): Json<Value>) -> Response {
+    let target = body
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if target.is_empty() {
+        return json_err("缺少 target 参数".to_string(), StatusCode::BAD_REQUEST);
+    }
+
+    let (base, api_key) = gateway_root_and_key();
+    if api_key.trim().is_empty() {
+        return json_err(
+            "请先在网关设置里填写 API Key：客户端需要凭据才能鉴权".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    let models: Vec<String> = match body.get("models").and_then(Value::as_array) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => match body.get("model").and_then(Value::as_str) {
+            Some(m) if !m.trim().is_empty() => vec![m.trim().to_string()],
+            _ => vec!["deepseek-v4-flash".to_string()],
+        },
+    };
+
+    match wb_switch_core::modules::agent_import::import_target(&target, &base, &api_key, &models) {
+        Ok(outcome) => json_ok(json!({
+            "ok": true,
+            "target": outcome.target,
+            "backupDir": outcome.backup_dir,
+            "files": outcome.files,
+            "models": outcome.models,
+        })),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/gateway/agents/batch-import —— 批量一键接入/更新客户端配置。
+///
+/// body: { "targets": ["claude-code", "codex"], "models": [...] }
+async fn api_agents_batch_import(Json(body): Json<Value>) -> Response {
+    let (base, api_key) = gateway_root_and_key();
+    if api_key.trim().is_empty() {
+        return json_err(
+            "请先在网关设置里填写 API Key：客户端需要凭据才能鉴权".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    let models: Vec<String> = match body.get("models").and_then(Value::as_array) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => vec!["deepseek-v4-flash".to_string()],
+    };
+
+    let target_ids: Option<Vec<String>> = body.get("targets").and_then(Value::as_array).map(|arr| {
+        arr.iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
+
+    let res = match target_ids {
+        Some(ref ids) if !ids.is_empty() => {
+            wb_switch_core::modules::agent_import::import_targets(ids, &base, &api_key, &models)
+        }
+        _ => wb_switch_core::modules::agent_import::import_all_installed(&base, &api_key, &models),
+    };
+
+    match res {
+        Ok(outcomes) => json_ok(json!({
+            "ok": true,
+            "count": outcomes.len(),
+            "outcomes": outcomes.iter().map(|o| json!({
+                "target": o.target,
+                "backupDir": o.backup_dir,
+                "files": o.files,
+                "models": o.models,
+            })).collect::<Vec<_>>(),
+            "models": models,
+        })),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/gateway/agents/restore —— 回滚到导入前的配置。
+///
+/// body: { "target": "codex", "backupId": "1757..." }（backupId 省略时取最近一次）
+async fn api_agents_restore(Json(body): Json<Value>) -> Response {
+    let target = body
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if target.is_empty() {
+        return json_err("缺少 target 参数".to_string(), StatusCode::BAD_REQUEST);
+    }
+
+    let backups = wb_switch_core::modules::agent_import::list_backups(&target);
+    let id = match body
+        .get("backupId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => match backups.first().and_then(|b| b.get("id")).and_then(Value::as_str) {
+            Some(id) => id.to_string(),
+            None => {
+                return json_err(
+                    format!("没有找到 {target} 的备份记录"),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        },
+    };
+
+    match wb_switch_core::modules::agent_import::restore_backup(&target, &id) {
+        Ok(restored) => json_ok(json!({
+            "ok": true,
+            "restored": restored,
+            "backupId": id,
+        })),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/gateway/agents/backups?target=codex —— 列出备份。
+async fn api_agents_backups(Query(params): Query<HashMap<String, String>>) -> Response {
+    let target = params.get("target").cloned().unwrap_or_default();
+    if target.trim().is_empty() {
+        return json_err("缺少 target 参数".to_string(), StatusCode::BAD_REQUEST);
+    }
+    json_ok(json!({
+        "backups": wb_switch_core::modules::agent_import::list_backups(&target),
+    }))
 }
