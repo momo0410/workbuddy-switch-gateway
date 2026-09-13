@@ -56,15 +56,33 @@
 | Token 保活 | 惰性刷新（操作前低于阈值即刷新）+ 每日保活，避免 refresh token 过期失效 |
 | 积分监控 | 查询各账号积分资源、剩余量与到期时间，7 天内到期高亮并优先排序 |
 | 积分统计 | 汇总官方请求用量：每日趋势、模型分布、账号消耗、请求明细 |
-| Token 统计 | WorkBuddy / CodeBuddy CLI / CodeBuddy CN IDE 分别统计输入、输出、缓存读写、调用次数 |
+| Token 统计 | WorkBuddy / WorkBuddy AI（国际版）/ CodeBuddy CLI / CodeBuddy CN IDE 四个来源独立统计输入、输出、缓存读写、调用次数 |
 | 会话复制 | 将当前账号的会话以新 ID 复制给目标账号（含 jsonl 正文、数据库索引、edge-sync 注册） |
 | 自动轮换 | 定时把「积分最紧迫」的账号设为后续会话默认账号，避免额度过期浪费 |
+
+### 智能体管理
+
+把网关一键接入本机已安装的 AI 客户端（独立页面）。
+
+| 模块 | 能力 |
+|---|---|
+| 客户端探测 | 自动识别 11 类客户端的安装目录、配置文件与版本 |
+| 一键接入 | 按客户端实际协议写入网关地址、API Key 与所选模型，写入前自动备份 |
+| 多协议适配 | Anthropic Messages（Claude 系）、OpenAI Chat、OpenAI Responses（Codex / Grok） |
+| 模型注入 | 支持多模型；Claude 系按 Sonnet / Opus / Haiku / Fable 四槽位映射 |
+| 批量更新 | 「一键更新所有已安装智能体」逐客户端容错执行，单个失败不影响其他 |
+| 历史回滚 | 每次写入生成时间戳备份，页面内一键恢复至任意历史版本 |
+
+支持的客户端：Claude Code / Claude Desktop / Codex / DeepSeek Harness / OpenCode /
+Pi / Grok Build / ZCode / Kimi Code / OpenClaw / Hermes Agent。
 
 ### 兼容网关
 
 源自 [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)。
 
 - **OpenAI 兼容接口**：`POST /v1/chat/completions`（流式 / 非流式）、`GET /v1/models`
+- **OpenAI Responses 接口**：`POST /v1/responses`（兼容 Codex CLI 0.146+）
+- **Anthropic Messages 接口**：`POST /v1/messages`（Claude Code / Claude Desktop 3P；请求与 SSE 双向转译、Tool Use 结构转换、Claude 槽位名自动翻译为上游模型名）
 - **账号池调度**：按积分到期日分层选号 —— 先烧快过期额度，同一天到期的账号平均分摊
 - **积分到期巡检**：每 15 分钟刷新余额与到期日，驱动上面的分层选号
 - **熔断与冷却**：429/404 软冷却、余额不足硬冷却至次日 04:00、连续失败指数退避熔断、在途租约限流
@@ -153,6 +171,9 @@
 | **单实例保护** | 重复启动不会开出第二个窗口，而是聚焦（必要时从托盘唤回）已有实例 |
 | **官方身份校验** | 用网关 `/healthz` 的 `service` 标识确认应答者身份，避免「假启动成功」 |
 | **双区域支持** | 国服（codebuddy.cn）与国际版（workbuddy.ai）账号可共存于同一账号库，按账号 `domain` 自动路由 |
+| **智能体一键接入** | 11 类客户端自动写入网关配置（多协议 + 多模型），写入前自动备份、可回滚 |
+| **客户端按区重启** | 切换账号时按账号区域关闭/启动对应客户端（国服 WorkBuddy / 国际版 WorkBuddy AI 互不干扰） |
+| **官方用量按区取数** | 国际版账号的官方请求用量与积分查询走 workbuddy.ai 域名，不再误发国服域名被拒 |
 
 关于**单实例保护**的必要性：应用启动后会运行 8 个后台任务（签到、保活、自动轮换、
 旅行派发/领取、网关同步等），它们都会写同一份账号库。若允许多开，多个实例会并发
@@ -363,7 +384,7 @@ npm run tauri build      # 构建 Windows 安装包
 ```
 src-tauri/src/       # Tauri command 薄包装与托盘
 crates/
-  wb-switch-core/    # 核心逻辑：账号/认证/切换/会话/签到/刷新/更新/配置
+  wb-switch-core/    # 核心逻辑：账号/认证/切换/会话/签到/刷新/更新/配置/智能体接入
   wb-switch-server/  # HTTP server + CLI：axum API + rust-embed 前端
   wb-switch-gateway/ # 网关内核（Rust 移植版，chat_completions 仍为占位）
 src/                 # 前端：components/pages/lib（api.ts 双通道：Tauri invoke / HTTP fetch）
@@ -392,6 +413,20 @@ scripts/             # 构建与发布脚本
      （保留该文件中的其他配置）。只更新**后续加载会话**使用的默认账号，不会切换
      正在运行的会话；请由 ACP 重新加载会话，或重启 CodeBuddy CLI 后生效。普通 CLI
      在同一进程内执行 `/resume` 不保证重新读取认证配置。
+
+### 智能体管理
+
+1. 进入「智能体管理」页面，应用会自动探测本机 11 类客户端（安装目录、配置文件与版本）
+2. 在顶部「分发模型配置」中选择要注入的模型：排第 1 位的自动作为默认主模型；
+   Claude 系客户端按 Sonnet / Opus / Haiku / Fable 四个槽位顺序映射
+3. 单卡片「一键接入」只写入该客户端；顶部「一键更新所有已安装智能体」逐客户端执行，
+   单个失败不会影响其他客户端
+4. 每次写入前自动备份到 `~/.wb-switch/agent-backups/<客户端>/<时间戳>/`，
+   卡片「备份历史」中可查看并一键回滚
+
+> 接入会覆盖各客户端现有网关配置（每次均自动备份）。以 Claude Desktop 为例，
+> 应用使用独立的 3P profile（`configLibrary` 中的独立 uuid），与 CC Switch 等
+> 其他工具的配置互不覆盖。
 
 ### 启用网关
 
@@ -426,6 +461,15 @@ curl $OPENAI_BASE_URL/chat/completions \
 ```
 
 现有 OpenAI SDK / 客户端通常只需替换 `base_url` 与 `api_key` 即可使用。
+
+Anthropic Messages 协议（Claude Code / Claude Desktop 等）使用：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7863
+export ANTHROPIC_AUTH_TOKEN=<你设置的 api_key>
+```
+
+> 也可直接在「智能体管理」页面一键写入上述配置（含模型与认证，自动备份）。
 
 ### 网关配置项
 
@@ -472,6 +516,7 @@ curl $OPENAI_BASE_URL/chat/completions \
 | 网关配置 | `~/.wb-switch/gateway/gateway_config.json` | 端口、API Key、模式等 |
 | 网关原生配置 | `~/.wb-switch/gateway/gateway_native_config.json` | 转换后交给网关进程的配置 |
 | 内嵌网关副本 | `~/.wb-switch/gateway/bin/` | 按内容指纹命名，版本升级后自动更新 |
+| 智能体配置备份 | `~/.wb-switch/agent-backups/` | 一键接入前自动备份，可随时回滚 |
 | 签到 / 轮换日志 | `~/.wb-switch/*_logs.json` | 最多保留 30 天 |
 
 > `accounts.json` 包含可直接登录的凭证，请勿分享或提交到版本库。
@@ -538,13 +583,16 @@ curl $OPENAI_BASE_URL/chat/completions \
 ```
 crates/wb-switch-core/        核心逻辑（不依赖 Tauri，可被桌面端与 HTTP 服务复用）
   src/modules/account.rs        账号存储
+  src/modules/agent_import.rs   智能体一键接入与配置生成（本项目新增）
   src/modules/gateway.rs        网关托管与账号桥接（本项目新增）
   src/modules/gateway_embed.rs  内嵌网关的释放与缓存（本项目新增）
   src/modules/travel.rs         猫猫旅行（App 侧）
+  src/modules/yaml_lite.rs      轻量 YAML 读写（本项目新增）
   build.rs                      构建期压缩内嵌网关（本项目新增）
 crates/wb-switch-server/      HTTP 服务形态（npm / webui）
 src/                          React 前端
   src/pages/GatewayPage.tsx     兼容网关页面（本项目新增）
+  src/pages/AgentsPage.tsx      智能体管理页面（本项目新增）
 src-tauri/                    桌面壳（Tauri 2）
   src/tray.rs                   托盘与单实例行为
   src/commands.rs               前端可调用的命令
@@ -558,7 +606,7 @@ cargo test --workspace          # 核心逻辑 + 桌面端单元测试
 npm run build                   # 前端类型检查与构建
 ```
 
-> Windows x64 上实测 `cargo test --workspace` 全部通过（188 个用例）。
+> Windows x64 上实测 `cargo test --workspace` 全部通过（207 个用例）。
 > 构建需要 **MSVC 工具链**（`stable-x86_64-pc-windows-msvc`，Tauri 依赖它链接
 > WebView2）；若需安装，可用
 > `winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`。
@@ -628,6 +676,22 @@ cd path/to/workbuddy2api && go test ./...
   （国际版的模型列表接口返回 500，无法动态拉取）
 - 新增 `schedule.checkin_scope`（`cn` 缺省 / `all`）与 `checkinScopeAllows()`：
   网关侧签到与猫猫旅行默认**跳过国际版账号**；token 保活不受该开关限制
+
+**Anthropic Messages 与 Responses 兼容层**（`internal/server/`，本项目新增）
+
+- `POST /v1/messages`：Anthropic 请求与 SSE 双向转译为 OpenAI Chat，
+  覆盖 system / tool_use / tool_result / thinking 与完整流式事件序列；
+  客户端传入的 Claude 槽位名（`claude-sonnet-5` 等）自动翻译为上游模型名
+- `POST /v1/responses`：Responses 事件序列完整（含 `response.output_item.done`，
+  Codex 0.146 依赖该事件收录并显示回复）
+- 抽出共享的「选号 → 轮换 → 转发」流程（`forward.go`），三种协议入口共用同一
+  账号池调度、熔断冷却、会话粘性与用量统计
+
+**出站脱敏增强**（`internal/upstream/sanitize.go`）
+
+- 新增两条上游指纹（命中即 HTTP 400 code=11128）：
+  Claude Code 2.1.260 系统提示中的官方仓库链接、Codex CLI instructions 中的
+  "led by OpenAI" 归属句；均按「最小改写、语义不变」原则处理
 
 补丁基于上游 `cfb1713` 生成，已验证可在更新的上游提交上干净应用并编译通过。
 
