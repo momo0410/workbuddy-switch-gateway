@@ -469,7 +469,9 @@ func responsesError(status int, code, msg string) map[string]any {
 func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	body, err := readLimitedBody(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, responsesError(http.StatusBadRequest, "invalid_request", err.Error()))
+		writeBodyReadError(w, err, responsesBodyCodes, func(w http.ResponseWriter, status int, code, msg string) {
+			writeJSON(w, status, responsesError(status, code, msg))
+		})
 		return
 	}
 

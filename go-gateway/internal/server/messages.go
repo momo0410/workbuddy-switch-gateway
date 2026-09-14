@@ -466,7 +466,9 @@ func anthropicError(status int, code, msg string) map[string]any {
 func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 	body, err := readLimitedBody(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, anthropicError(http.StatusBadRequest, "invalid_request_error", err.Error()))
+		writeBodyReadError(w, err, anthropicBodyCodes, func(w http.ResponseWriter, status int, code, msg string) {
+			writeJSON(w, status, anthropicError(status, code, msg))
+		})
 		return
 	}
 

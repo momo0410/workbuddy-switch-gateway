@@ -706,6 +706,21 @@ cd path/to/workbuddy2api && go test ./...
   Claude Code 2.1.260 系统提示中的官方仓库链接、Codex CLI instructions 中的
   "led by OpenAI" 归属句；均按「最小改写、语义不变」原则处理
 
+**负载均衡修复**（`internal/pool/pool.go`、`internal/server/*.go`，见 Issue #5）
+
+修复「多账号只用到少数几个」与长对话报 `unexpected EOF` 两类问题：
+
+- **同档不再截断短名单**：到期分层后曾仍按 `(权重, uid)` 排序截断前 5 名。权重
+  打平时 uid 是固定决胜键，档内排在第 6 名之后的账号会被**永久**排除在流量之外。
+  实测 14 账号中 8 个同档，仅 5 个拿到流量、另 3 个占比 1.3%。现在分层路径保留
+  整档（未分层回退路径仍截断前 5，老语义不变）
+- **超限请求体显式报错**：原先 `io.LimitReader(8MB)` 读满即静默截断，截断体不是
+  合法 JSON 却仍透传给上游，上游解码报 `11101 Unmarshal chat params failed with
+  error: unexpected EOF`。现在上限提到 32MB 并多读 1 字节判定越界，超限回 **413**
+  且按协议给出各自错误码（OpenAI `payload_too_large` / Anthropic `request_too_large`）
+- **熔断期状态画像修正**：`cool_remaining_sec` 原先只看 `until`、`cool_kind` 取
+  可能早已失效的历史值，导致熔断中的账号显示成「冷却中 · 剩余 0 秒 · 余额不足」
+  （即使余额充足）。现在按**真正决定恢复的那个截止**（两截止取较晚者）计算
 补丁基于上游 `cfb1713` 生成，已验证可在更新的上游提交上干净应用并编译通过。
 
 > 若你只使用国服，可跳过该补丁，功能与上游一致。

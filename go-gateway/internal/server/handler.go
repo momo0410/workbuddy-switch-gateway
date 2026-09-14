@@ -4,6 +4,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -333,7 +334,7 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := readLimitedBody(r)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		writeBodyReadError(w, err, openAIBodyCodes, writeOpenAIError)
 		return
 	}
 	var peek struct {
@@ -422,12 +423,31 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind) {
 // helpers
 // ---------------------------------------------------------------------------
 
-const maxRequestBody = 8 << 20
+// maxRequestBody 请求体上限。
+//
+// 为什么从 8MB 提到 32MB：长对话（Claude Code / Codex 一轮带上大量文件内容与工具
+// 结果）很容易突破 8MB，而**静默截断**会把合法 JSON 切成半截字节透传给上游，
+// 上游 json.Decoder 报 `unexpected EOF`，表现为 400 code=11101
+// "Unmarshal chat params failed with error: unexpected EOF" —— 客户端只看到
+// 「请求参数有误」，完全无法定位到是网关截断（Issue #5 实测）。
+const maxRequestBody = 32 << 20
 
+// errBodyTooLarge 请求体超过 maxRequestBody。作为哨兵错误供 handler 回 413，
+// 避免把截断后的坏字节继续往下传（那样只能在上游报出难以定位的解析错误）。
+var errBodyTooLarge = errors.New("request body too large")
+
+// readLimitedBody 读取请求体，超过 maxRequestBody 时**显式报错**而非静默截断。
+//
+// 关键差别：LimitReader 读满即返回，调用方无法区分「读完了」与「被截断了」，
+// 于是截断体一路流到上游才炸。这里多读 1 字节来判定越界：读回长度 > 上限
+// 即说明源还没结束，直接返回 errBodyTooLarge。
 func readLimitedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxRequestBody {
+		return nil, errBodyTooLarge
 	}
 	if len(body) == 0 {
 		return nil, errors.New("empty request body")
@@ -457,3 +477,36 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 		},
 	})
 }
+
+// bodyErrorCodes 各协议在「请求体超限」与「读取失败」两种情形下使用的错误码。
+//
+// 分开配置是因为三家协议的词汇表不同：OpenAI 用 payload_too_large /
+// invalid_request，Anthropic 用 request_too_large / invalid_request_error，
+// 客户端按自家词汇表分支处理，混用会让错误提示退化成未知错误。
+type bodyErrorCodes struct {
+	tooLarge   string
+	badRequest string
+}
+
+// writeBodyReadError 把 readLimitedBody 的失败翻译成目标协议的错误响应。
+//
+// 超限返回 413 并给出明确原因：客户端据此知道要缩减历史，而不是收到一个
+// "请求参数有误"然后无从下手（静默截断透传时的表现，见 Issue #5）。
+// 其余读取错误维持 400 原语义。
+func writeBodyReadError(w http.ResponseWriter, err error, codes bodyErrorCodes, write func(http.ResponseWriter, int, string, string)) {
+	if errors.Is(err, errBodyTooLarge) {
+		write(w, http.StatusRequestEntityTooLarge, codes.tooLarge,
+			fmt.Sprintf("request body exceeds %d MB limit; reduce the conversation history or attachment size", maxRequestBody>>20))
+		return
+	}
+	write(w, http.StatusBadRequest, codes.badRequest, "read body: "+err.Error())
+}
+
+// openAIBodyCodes OpenAI 系（chat/completions）的错误码。
+var openAIBodyCodes = bodyErrorCodes{tooLarge: "payload_too_large", badRequest: "invalid_request"}
+
+// anthropicBodyCodes Anthropic Messages 的错误码。
+var anthropicBodyCodes = bodyErrorCodes{tooLarge: "request_too_large", badRequest: "invalid_request_error"}
+
+// responsesBodyCodes OpenAI Responses 的错误码。
+var responsesBodyCodes = bodyErrorCodes{tooLarge: "payload_too_large", badRequest: "invalid_request"}
