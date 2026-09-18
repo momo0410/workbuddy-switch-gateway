@@ -29,7 +29,8 @@ base64 = "0.22"
 [target.'cfg(windows)'.dependencies]
 # Win32_System_JobObjects / Win32_System_Threading / Win32_Security 供网关子进程的
 # Job Object 孤儿防护使用（应用退出时连带终止 gateway.exe）。
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading"] }
+# Win32_System_Diagnostics_ToolHelp 供单测枚举子进程、验证整棵进程树被终止。
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [build-dependencies]
 # 构建期压缩内嵌网关
