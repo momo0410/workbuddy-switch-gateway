@@ -1,7 +1,7 @@
-[package]
+﻿[package]
 name = "wb-switch-rust"
-version = "0.8.9"
-description = "wb-switch —— WorkBuddy 账号切换工具（Rust/Tauri 版）"
+version = "0.8.10"
+description = "wb-switch 鈥斺€?WorkBuddy 璐﹀彿鍒囨崲宸ュ叿锛圧ust/Tauri 鐗堬級"
 authors = ["apple"]
 edition = "2021"
 
@@ -12,19 +12,19 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "wb_switch_rust_lib"
-# 桌面版只需 rlib（iOS 用 staticlib）。
+# 妗岄潰鐗堝彧闇€ rlib锛坕OS 鐢?staticlib锛夈€?
 #
-# 刻意去掉 cdylib：它是 Android 需要的产物类型，会让 GNU 链接器尝试导出
-# 全部符号，而 MinGW 的导出序号上限是 65535 —— 加入依赖后实测达到 161178，
-# 报「export ordinal too large」链接失败。桌面构建不需要 cdylib。
-# 若将来要出 Android 版，请改用 MSVC 工具链并把 cdylib 加回。
+# 鍒绘剰鍘绘帀 cdylib锛氬畠鏄?Android 闇€瑕佺殑浜х墿绫诲瀷锛屼細璁?GNU 閾炬帴鍣ㄥ皾璇曞鍑?
+# 鍏ㄩ儴绗﹀彿锛岃€?MinGW 鐨勫鍑哄簭鍙蜂笂闄愭槸 65535 鈥斺€?鍔犲叆渚濊禆鍚庡疄娴嬭揪鍒?161178锛?
+# 鎶ャ€宔xport ordinal too large銆嶉摼鎺ュけ璐ャ€傛闈㈡瀯寤轰笉闇€瑕?cdylib銆?
+# 鑻ュ皢鏉ヨ鍑?Android 鐗堬紝璇锋敼鐢?MSVC 宸ュ叿閾惧苟鎶?cdylib 鍔犲洖銆?
 crate-type = ["staticlib", "rlib"]
 
 [features]
-# 默认启用 custom-protocol：不开该 feature 的 `cargo build --release` 会产出加载
-# devUrl http://localhost:1420 的开发模式 exe，vite 未运行时窗口即报
-# “localhost 拒绝连接”。`tauri dev` 传 --no-default-features 并过滤本 feature，
-# `tauri build` 显式传 tauri/custom-protocol，两者均不受影响。
+# 榛樿鍚敤 custom-protocol锛氫笉寮€璇?feature 鐨?`cargo build --release` 浼氫骇鍑哄姞杞?
+# devUrl http://localhost:1420 鐨勫紑鍙戞ā寮?exe锛寁ite 鏈繍琛屾椂绐楀彛鍗虫姤
+# 鈥渓ocalhost 鎷掔粷杩炴帴鈥濄€俙tauri dev` 浼?--no-default-features 骞惰繃婊ゆ湰 feature锛?
+# `tauri build` 鏄惧紡浼?tauri/custom-protocol锛屼袱鑰呭潎涓嶅彈褰卞搷銆?
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
@@ -40,16 +40,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
-# 单实例保护：多开会并发写 accounts.json 并重复启停网关
+# 鍗曞疄渚嬩繚鎶わ細澶氬紑浼氬苟鍙戝啓 accounts.json 骞堕噸澶嶅惎鍋滅綉鍏?
 tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2.7.2"
 
-# 系统自启（开机静默启动）：仅桌面目标支持（macOS / Windows / Linux）。
+# 绯荤粺鑷惎锛堝紑鏈洪潤榛樺惎鍔級锛氫粎妗岄潰鐩爣鏀寔锛坢acOS / Windows / Linux锛夈€?
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
 
-# macOS Dock 图标与「隐藏而非退出」行为所需的 AppKit 绑定。
+# macOS Dock 鍥炬爣涓庛€岄殣钘忚€岄潪閫€鍑恒€嶈涓烘墍闇€鐨?AppKit 缁戝畾銆?
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSWorkspace"] }

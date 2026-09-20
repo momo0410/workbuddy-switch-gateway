@@ -661,6 +661,10 @@ export interface GatewayStatus {
     reason?: string | null;
   }>;
   authDir: string;
+  /** 网关日志文件绝对路径（`~/.wb-switch/gateway/gateway.log`）。 */
+  logFile?: string;
+  /** 日志文件当前字节数（0 或缺失 = 还没有日志）。 */
+  logBytes?: number;
   accountsInLibrary: number;
   config: GatewayConfig;
   health: { reachable?: boolean; healthy?: boolean; detail?: unknown } | null;
@@ -761,6 +765,27 @@ export interface GatewayUsageResult {
   reachable: boolean;
   usage: GatewayUsageSnapshot | null;
   error: string | null;
+}
+
+/**
+ * 网关日志读取结果（GET /api/gateway/log / read_gateway_log）。
+ *
+ * `truncated=true` 有两种成因，界面提示统一为「仅显示末尾部分」即可：
+ * ① 文件超过行数上限；② 只回读了文件末尾一段字节（长文件常态）。
+ */
+export interface GatewayLogResult {
+  ok: boolean;
+  error?: string;
+  /** 日志文件绝对路径（用户可自行去取完整文件） */
+  path: string;
+  /** 文件是否存在：不存在时 lines 为空，界面提示「还没有日志」 */
+  exists?: boolean;
+  /** 文件总字节数 */
+  totalBytes?: number;
+  /** 末尾若干行，最新一行在最后 */
+  lines?: string[];
+  /** true 表示只给了尾部，完整内容需看文件 */
+  truncated?: boolean;
 }
 
 // ---------------------------------------------------------------------------

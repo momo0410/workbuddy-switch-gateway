@@ -861,6 +861,75 @@ pub async fn get_gateway_usage(days: Option<i64>) -> Result<Value, String> {
     Ok(wb_switch_core::modules::gateway::fetch_usage(days).await)
 }
 
+/// 读取网关日志末尾若干行（内置面板用）。
+///
+/// `maxLines` 默认 500：够看清最后一批请求，又不会把界面塞爆。
+/// 只读尾部而不是整份 —— 日志上限 5 MB，全量读会卡住 UI（见 #29）。
+#[tauri::command(rename_all = "camelCase")]
+pub fn read_gateway_log(max_lines: Option<usize>) -> Result<Value, String> {
+    let lines = max_lines.unwrap_or(500).clamp(1, 5000);
+    Ok(wb_switch_core::modules::gateway::read_gateway_log_tail(
+        lines,
+        // 回读字节上限随行数放大，保证「500 行」不会被字节上限先截断；
+        // 上限 2 MB 足以覆盖 500 行长文本（含上游错误体）。
+        2 * 1024 * 1024,
+    ))
+}
+
+/// 在文件管理器中定位网关日志文件（Finder / 资源管理器）。
+///
+/// 为什么需要它：内置面板只给末尾若干行，完整现场（含轮转的历史副本）仍要靠
+/// 文件本身。让用户能一键打开所在目录，比自己拼 `~/.wb-switch/gateway` 路径友好。
+#[tauri::command]
+pub fn reveal_gateway_log() -> Result<Value, String> {
+    let path = wb_switch_core::modules::gateway::gateway_log_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // 文件尚不存在时定位到目录而非文件：`open -R` 一个不存在的文件在 macOS 上
+    // 会静默失败，用户会以为按钮坏了。此时打开目录并告知「还没有日志」。
+    let exists = path.exists();
+    let target = if exists {
+        path.clone()
+    } else {
+        path.parent().map(|p| p.to_path_buf()).unwrap_or(path.clone())
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if exists {
+            cmd.arg("-R");
+        }
+        let _ = cmd.arg(&target).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if exists {
+            // /select 需要 Windows 原生路径（反斜杠），`to_string_lossy` 已是该形式
+            let _ = std::process::Command::new("explorer")
+                .arg(format!("/select,{}", target.to_string_lossy()))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        } else {
+            let _ = std::process::Command::new("explorer")
+                .arg(target.to_string_lossy().to_string())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+    }
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "exists": exists,
+        "revealed": target.to_string_lossy(),
+    }))
+}
+
 /// 把网关接入指定客户端（写配置 + 自动备份，支持多模型）。
 #[tauri::command(rename_all = "camelCase")]
 pub fn import_agent_client(

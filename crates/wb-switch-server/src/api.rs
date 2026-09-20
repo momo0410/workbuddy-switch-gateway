@@ -117,6 +117,7 @@ pub fn router() -> Router {
         .route("/api/gateway/restart", post(api_gateway_restart))
         .route("/api/gateway/models", get(api_gateway_models))
         .route("/api/gateway/usage", get(api_gateway_usage))
+        .route("/api/gateway/log", get(api_gateway_log))
         // ---- 一键导入：接入本机 AI 客户端 ----
         .route("/api/gateway/agents", get(api_agents_detect))
         .route("/api/gateway/agents/import", post(api_agents_import))
@@ -867,6 +868,22 @@ async fn api_set_allowed_model(Json(body): Json<Value>) -> Response {
         return json_err(msg, StatusCode::BAD_REQUEST);
     }
     json_ok(result)
+}
+
+/// GET /api/gateway/log —— 读取网关日志末尾若干行（webui 模式的查看入口）。
+///
+/// query: `?maxLines=500`（默认 500，上限 5000）。
+/// 与桌面端命令同源（都走 `read_gateway_log_tail`），保证两条链路行为一致。
+async fn api_gateway_log(Query(q): Query<HashMap<String, String>>) -> Response {
+    let max_lines = q
+        .get("maxLines")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(500)
+        .clamp(1, 5000);
+    json_ok(wb_switch_core::modules::gateway::read_gateway_log_tail(
+        max_lines,
+        2 * 1024 * 1024,
+    ))
 }
 
 /// POST /api/gateway/start —— 启动网关（可选 body.port 指定端口）。

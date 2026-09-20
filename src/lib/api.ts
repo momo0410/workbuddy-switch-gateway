@@ -27,6 +27,7 @@ import type {
   GatewayMode,
   GatewayModeSwitchResult,
   GatewayModelItem,
+  GatewayLogResult,
   GatewayStartResult,
   GatewayStatus,
   GatewayPortCheck,
@@ -153,6 +154,7 @@ const ROUTES: Record<string, Route> = {
   sync_gateway_accounts: { method: "POST", path: "/api/gateway/sync" },
   get_gateway_models: { method: "GET", path: "/api/gateway/models" },
   get_gateway_usage: { method: "GET", path: "/api/gateway/usage" },
+  read_gateway_log: { method: "GET", path: "/api/gateway/log" },
   // ---- 一键导入：接入本机 AI 客户端 ----
   detect_agent_clients: { method: "GET", path: "/api/gateway/agents" },
   import_agent_client: { method: "POST", path: "/api/gateway/agents/import" },
@@ -703,6 +705,30 @@ export async function getGatewayModels(): Promise<GatewayModelItem[]> {
  */
 export function getGatewayUsage(days?: number): Promise<GatewayUsageResult> {
   return call<GatewayUsageResult>("get_gateway_usage", days && days > 0 ? { days } : undefined);
+}
+
+/**
+ * 读取网关日志末尾若干行（内置面板用）。
+ *
+ * 只读尾部：单份日志上限 5 MB，全量读既慢又没必要 —— 排查看的是最后一次请求。
+ * `truncated=true` 表示这里只给了尾部，完整内容需打开文件（配合 `revealGatewayLog`）。
+ */
+export function readGatewayLog(maxLines = 500): Promise<GatewayLogResult> {
+  return call<GatewayLogResult>("read_gateway_log", { maxLines });
+}
+
+/**
+ * 在文件管理器中定位网关日志文件（桌面端专用；webui 由用户自行打开路径）。
+ *
+ * 文件尚不存在时定位到所在目录，避免「点了没反应」。
+ */
+export function revealGatewayLog(): Promise<{ path: string; exists: boolean; revealed: string }> {
+  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (isWebui()) {
+    // webui 是浏览器环境，无法操作宿主文件管理器：把路径交给调用方提示用户手动打开。
+    return Promise.resolve({ path: "", exists: false, revealed: "" });
+  }
+  return call<{ path: string; exists: boolean; revealed: string }>("reveal_gateway_log");
 }
 
 /** 探测本机 AI 客户端（全部 11 类智能体）的安装与配置状态。 */

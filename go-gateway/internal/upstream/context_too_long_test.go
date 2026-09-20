@@ -43,6 +43,30 @@ func TestClassifyRealContextTooLong(t *testing.T) {
 	}
 }
 
+// realContextTooLongBodyHy3 hy3 实测响应体（逐字复制自 #27 用户现场截图，勿改）。
+//
+// 关键差异：业务码是 **4028** 而非 11115，且不含 extError.code —— 与 11115 样本
+// 相比，另外两路信号都不成立。此前能判对纯粹靠 msg 里的 "prompt is too long"
+// 文案兜底；一旦上游换成别的措辞就会漏判，故本样本专门盯住 4028 这条路。
+//
+// 另一个值得记住的数字：只超了 1 个 token（100001 > 100000）。
+// 这说明窗口边界是硬限制，不存在「超一点点会放行」的余地。
+const realContextTooLongBodyHy3 = `{"code":4028,"msg":"prompt is too long: 100001 tokens > 100000 maximum"}`
+
+// TestClassifyRealContextTooLongHy3 hy3 现场的 4028 必须独立判为 ErrContextTooLong。
+//
+// 去掉 msg 后仍然要成立 —— 这条才是「业务码已正式登记」的真正证明。
+func TestClassifyRealContextTooLongHy3(t *testing.T) {
+	if got := Classify(http.StatusBadRequest, realContextTooLongBodyHy3); got != ErrContextTooLong {
+		t.Fatalf("hy3 现场样本 → %v want ErrContextTooLong", got)
+	}
+	// 剥掉文案，只剩业务码：这是上游改文案时唯一还站得住的信号。
+	bare := `{"code":4028,"msg":"upstream reworded this"}`
+	if got := Classify(http.StatusBadRequest, bare); got != ErrContextTooLong {
+		t.Errorf("仅凭 4028 业务码 → %v want ErrContextTooLong（4028 未被登记？）", got)
+	}
+}
+
 // TestClassifyRealContextTooLongCN 国服样本同样要判为 ErrContextTooLong。
 func TestClassifyRealContextTooLongCN(t *testing.T) {
 	if got := Classify(http.StatusBadRequest, realContextTooLongBodyCN); got != ErrContextTooLong {
@@ -78,6 +102,7 @@ func TestClassifyContextTooLongVariants(t *testing.T) {
 		body string
 	}{
 		{"仅业务码 11115", `{"code":11115,"msg":"boom"}`},
+		{"仅业务码 4028", `{"code":4028,"msg":"boom"}`},
 		{"仅 extError.code", `{"code":0,"extError":{"code":"context_length_exceeded"}}`},
 		{"仅英文文案", `{"code":9,"msg":"prompt is too long: 999 tokens > 10 maximum"}`},
 		{"仅英文 displayMsg", `{"displayMsg":{"en":"The request exceeds the model context limit."}}`},

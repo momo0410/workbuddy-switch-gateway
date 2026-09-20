@@ -60,6 +60,146 @@ pub fn gateway_state_file() -> PathBuf {
     gateway_dir().join(GATEWAY_STATE_DIR).join("state.json")
 }
 
+/// 网关运行日志文件名（网关子进程的 stdout + stderr 一并写这里）。
+const GATEWAY_LOG: &str = "gateway.log";
+
+/// 日志按大小轮转：单文件上限 5 MB，滚动保留 3 个历史副本。
+///
+/// 为什么需要轮转：网关是常驻进程，请求级表格日志一行一条、长年累月会把磁盘撑爆。
+/// 5 MB 足以覆盖「最近一次故障现场」（按实测约 2~3 万行），又不会让用户难以翻找。
+const GATEWAY_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// 历史日志副本数（gateway.log.1 ~ gateway.log.3）。
+const GATEWAY_LOG_KEEP: usize = 3;
+
+/// 网关日志文件路径（`~/.wb-switch/gateway/gateway.log`）。
+///
+/// 放在 `gateway_dir()` 下而不是散在系统临时目录：用户可以自己找到并打包给维护者，
+/// 这与 `#29` 的诉求一致 ——「用户能自查、维护者能取证」。
+pub fn gateway_log_file() -> PathBuf {
+    gateway_dir().join(GATEWAY_LOG)
+}
+
+/// 按大小轮转日志：超出上限时把 `gateway.log` 顺次改名
+/// `gateway.log.1` → `.2` → `.3`，最旧的一份丢弃。
+///
+/// 为什么在**启动前**轮转而不是运行中：网关子进程持有文件句柄，运行中改名会让
+/// 写入落空（Windows 上更是直接失败）。启动前是唯一能安全搬动文件的时刻，
+/// 而单次运行超过 5 MB 的场景（长时间不间断压测）由下一次启动兜住，不会丢现场。
+fn rotate_gateway_log() {
+    let log = gateway_log_file();
+    let Ok(meta) = std::fs::metadata(&log) else {
+        return; // 文件不存在或不可读：无需轮转
+    };
+    if meta.len() < GATEWAY_LOG_MAX_BYTES {
+        return;
+    }
+    // 从最旧往新搬：.2 → .3 会覆盖已有的 .3，正好实现「只保留 N 份」。
+    for i in (1..GATEWAY_LOG_KEEP).rev() {
+        let from = log.with_extension(format!("log.{i}"));
+        let to = log.with_extension(format!("log.{}", i + 1));
+        if from.exists() {
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+    let _ = std::fs::rename(&log, log.with_extension("log.1"));
+}
+
+/// 打开网关日志文件用于**追加**写入（子进程 stdout/stderr 的落点）。
+///
+/// 追加而非截断：网关重启后仍需保留上一轮现场，否则「重启一次就丢证据」。
+fn open_gateway_log() -> Option<std::fs::File> {
+    let log = gateway_log_file();
+    if let Some(dir) = log.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    rotate_gateway_log();
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        Ok(f) => Some(f),
+        Err(_) => None, // 打开失败不能让网关起不来：回退到丢弃日志
+    }
+}
+
+/// 读取日志文件**尾部**若干行，供界面内置面板展示（#29 的「查看日志」入口）。
+///
+/// 为什么要读尾部而不是整份：单份日志可达 5 MB，全量读会卡住界面且毫无必要 ——
+/// 排查要看的永远是**最后一次请求**。这里只从文件末尾往前读 `max_bytes`，
+/// 再按行切出最后 `max_lines` 行，避免把整份日志载入内存。
+///
+/// 返回值同时带出体量信息，让界面能提示「仅显示末尾 N 行，完整内容请在文件里看」。
+pub fn read_gateway_log_tail(max_lines: usize, max_bytes: u64) -> Value {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let path = gateway_log_file();
+    let total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if total == 0 {
+        return json!({
+            "ok": true,
+            "path": path.to_string_lossy(),
+            "exists": path.exists(),
+            "totalBytes": 0u64,
+            "lines": Vec::<String>::new(),
+            "truncated": false,
+        });
+    }
+
+    let mut file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            return json!({
+                "ok": false,
+                "error": format!("打开日志文件失败：{e}"),
+                "path": path.to_string_lossy(),
+            });
+        }
+    };
+    // 只回读末尾一段：`seek` 到 max(total - max_bytes, 0)。
+    let start = total.saturating_sub(max_bytes);
+    if let Err(e) = file.seek(SeekFrom::Start(start)) {
+        return json!({
+            "ok": false,
+            "error": format!("定位日志文件失败：{e}"),
+            "path": path.to_string_lossy(),
+        });
+    }
+    let mut buf = String::new();
+    // 非 UTF-8 字节（网关侧一般不会有，但上游错误体透传时可能出现）不能让整个
+    // 读取失败：用 lossy 转换，坏字节显示为替换符，其余内容照常可读。
+    let mut raw = Vec::new();
+    if let Err(e) = file.read_to_end(&mut raw) {
+        return json!({
+            "ok": false,
+            "error": format!("读取日志文件失败：{e}"),
+            "path": path.to_string_lossy(),
+        });
+    }
+    buf.push_str(&String::from_utf8_lossy(&raw));
+
+    // 从文件中间截断时，首行大概率是半截的（不是真正的行首），丢弃它避免误读。
+    let mut lines: Vec<&str> = buf.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let truncated = lines.len() > max_lines;
+    if truncated {
+        lines.drain(..lines.len() - max_lines);
+    }
+
+    json!({
+        "ok": true,
+        "path": path.to_string_lossy(),
+        "exists": true,
+        "totalBytes": total,
+        // 界面展示用：末尾若干行（最新在最后）
+        "lines": lines.iter().map(|s| s.to_string()).collect::<Vec<String>>(),
+        // true 表示文件更大、这里只给了尾部 —— 界面需提示用户看完整文件
+        "truncated": truncated || start > 0,
+    })
+}
+
 /// 可执行文件名（Windows 带 .exe 后缀，macOS/Linux 不带）。
 fn gateway_exe_name() -> &'static str {
     if cfg!(windows) {
@@ -1095,9 +1235,35 @@ pub async fn start_gateway(cfg: &Value) -> Result<Value, String> {
     let mut cmd = Command::new(&exe);
     cmd.arg("-config")
         .arg(&native_cfg)
-        .current_dir(gateway_dir())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .current_dir(gateway_dir());
+    // 网关的请求级日志（TTFB / token 统计 / **上游原始错误体**）全部走 stdout，
+    // stderr 则是启动期致命错误。此前两者都被接到 `Stdio::null()` —— 网关如实
+    // 写了，却没有任何地方接住，写完即丢（见 #29）：用户报错时无从自查，
+    // 维护者要判定「是网关还是上游」也拿不到原始响应体。
+    // 现在统一落到 `<网关目录>/gateway.log`，按大小轮转，前端提供查看入口。
+    match open_gateway_log() {
+        Some(file) => {
+            let err_file = file.try_clone().ok();
+            cmd.stdout(Stdio::from(file));
+            match err_file {
+                // stderr 与 stdout 同文件：网关启动失败的 panic 会紧跟在
+                // stdout 末尾，同一份文件里按时间顺序读更贴近现场。
+                Some(f) => {
+                    cmd.stderr(Stdio::from(f));
+                }
+                // 复制句柄失败（极端情况）时退回丢弃 stderr，但保住 stdout ——
+                // 请求日志比启动期 stderr 更常被需要。
+                None => {
+                    cmd.stderr(Stdio::null());
+                }
+            }
+        }
+        // 日志文件打不开（磁盘满 / 权限不足）时不能连累网关启动，
+        // 行为回退到 #29 之前的 `Stdio::null()`。
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
     // 非 Windows 平台不需要抑制控制台窗口，保持默认行为。
     #[cfg(target_os = "windows")]
     {
@@ -1303,6 +1469,10 @@ pub async fn gateway_status() -> Value {
         "exeSource": gateway_source(),
         "portAvailable": port_free(port),
         "authDir": gateway_auth_dir().to_string_lossy(),
+        // 网关日志路径与体量：界面上的「查看日志」按钮据此展示，
+        // 用户也可直接按路径去取文件（#29）。
+        "logFile": gateway_log_file().to_string_lossy(),
+        "logBytes": std::fs::metadata(gateway_log_file()).map(|m| m.len()).unwrap_or(0),
         "accountsInLibrary": account_count,
         "config": cfg,
         "health": health,
@@ -2394,5 +2564,102 @@ mod tests {
         for id in &ids {
             assert!(seen.insert(id.clone()), "模型 id 重复：{id}");
         }
+    }
+
+    /// 日志读取：不存在时返回 exists=false 而不是报错（首次启动尚未产生日志）。
+    #[test]
+    fn gateway_log_tail_missing_file_is_ok() {
+        let dir = std::env::temp_dir().join(format!("wb-gw-log-miss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 用 WB_SWITCH_HOME 把日志目录指到临时目录，避免污染真实数据目录。
+        // SAFETY: 测试单线程执行，且用完立即还原。
+        unsafe { std::env::set_var("WB_SWITCH_HOME", &dir) };
+
+        let v = read_gateway_log_tail(100, 1024);
+        assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(v.get("exists").and_then(Value::as_bool), Some(false));
+        assert_eq!(v.get("totalBytes").and_then(Value::as_u64), Some(0));
+        assert!(v
+            .get("lines")
+            .and_then(Value::as_array)
+            .map(|a| a.is_empty())
+            .unwrap_or(false));
+
+        unsafe { std::env::remove_var("WB_SWITCH_HOME") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 日志读取：只回尾部，且行数上限生效（这是「不把 5 MB 全量读进界面」的保证）。
+    #[test]
+    fn gateway_log_tail_reads_only_tail() {
+        let dir = std::env::temp_dir().join(format!("wb-gw-log-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("gateway")).unwrap();
+        let path = dir.join("gateway").join("gateway.log");
+        let body: String = (1..=200).map(|i| format!("line-{i}\n")).collect();
+        std::fs::write(&path, body).unwrap();
+
+        unsafe { std::env::set_var("WB_SWITCH_HOME", &dir) };
+
+        let v = read_gateway_log_tail(10, 4096);
+        let lines: Vec<String> = v
+            .get("lines")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(lines.len(), 10, "行数上限应精确生效");
+        assert_eq!(lines.last().map(String::as_str), Some("line-200"), "最后一行必须是最新的");
+        assert_eq!(v.get("truncated").and_then(Value::as_bool), Some(true));
+
+        unsafe { std::env::remove_var("WB_SWITCH_HOME") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 日志轮转：超上限时改名归档，且只保留配置的历史份数。
+    ///
+    /// 这条测试守住的是「常驻网关不会把磁盘撑爆」这个承诺 —— 少了它，
+    /// 轮转逻辑一旦被改坏（比如条件写反）不会有任何症状，直到用户磁盘满。
+    #[test]
+    fn gateway_log_rotation_keeps_bounded_files() {
+        let dir = std::env::temp_dir().join(format!("wb-gw-log-rot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("gateway")).unwrap();
+        let log = dir.join("gateway").join("gateway.log");
+        // 写一个略超上限的文件，触发轮转。
+        std::fs::write(&log, vec![b'x'; (GATEWAY_LOG_MAX_BYTES + 1) as usize]).unwrap();
+
+        unsafe { std::env::set_var("WB_SWITCH_HOME", &dir) };
+        rotate_gateway_log();
+        unsafe { std::env::remove_var("WB_SWITCH_HOME") };
+
+        assert!(!log.exists(), "超限后原文件应被改名归档");
+        let archived = dir.join("gateway").join("gateway.log.1");
+        assert!(archived.exists(), "应生成 gateway.log.1");
+
+        // 连做 N 次轮转：副本数不得超过 GATEWAY_LOG_KEEP（各历史文件大小即原文件大小）。
+        for _ in 0..GATEWAY_LOG_KEEP + 2 {
+            std::fs::write(&log, vec![b'x'; (GATEWAY_LOG_MAX_BYTES + 1) as usize]).unwrap();
+            unsafe { std::env::set_var("WB_SWITCH_HOME", &dir) };
+            rotate_gateway_log();
+            unsafe { std::env::remove_var("WB_SWITCH_HOME") };
+        }
+        for i in 1..=GATEWAY_LOG_KEEP {
+            assert!(
+                dir.join("gateway").join(format!("gateway.log.{i}")).exists(),
+                "应保留第 {i} 份历史日志"
+            );
+        }
+        assert!(
+            !dir.join("gateway").join(format!("gateway.log.{}", GATEWAY_LOG_KEEP + 1)).exists(),
+            "历史日志份数必须封顶在 {GATEWAY_LOG_KEEP}，否则磁盘会被慢慢吃满"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

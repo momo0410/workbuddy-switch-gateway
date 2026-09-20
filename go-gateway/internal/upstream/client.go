@@ -122,6 +122,20 @@ const modelRateCode = 6004
 //	                   "zh":"对话内容超出模型长度上限，请精简对话或减少附件后重试。"}}
 const contextTooLongCode = 11115
 
+// contextTooLongCodeAlt 上游「上下文超长」的另一个业务码（hy3 等模型上实测）。
+//
+// 实测响应（2026-09-20，issue #27 用户现场，prompt 100001 > 上限 100000）：
+//
+//	400 {"code":4028,"msg":"prompt is too long: 100001 tokens > 100000 maximum", ...}
+//
+// 与 11115 是**同一类语义、不同码值**：上游按模型/版本下发不同码。
+// 此前只认 11115，这次能判定成功靠的是文案兜底（"prompt is too long"）——
+// 一旦上游只改文案不改码就会漏判，因此把 4028 一并登记为正式信号。
+const contextTooLongCodeAlt = 4028
+
+// contextTooLongCodes 全部已登记的「上下文超长」业务码。
+var contextTooLongCodes = []int{contextTooLongCode, contextTooLongCodeAlt}
+
 // contextTooLongMarkers 上下文超长的判定文案（中英双通道兜底）。
 //
 // 业务码是主信号；文案兜底用于上游改码不改文案的场景。措辞取自上游真实响应，
@@ -140,15 +154,19 @@ var contextTooLongMarkers = []string{
 
 // IsContextTooLong 报告上游响应是否为「请求上下文超出模型窗口」。
 //
-// 三路判定，任一命中即成立：业务码 11115、extError.code=context_length_exceeded、
-// 或真实文案关键词（见 contextTooLongCode 注释里的实测响应）。
+// 三路判定，任一命中即成立：业务码（见 contextTooLongCodes）、
+// extError.code=context_length_exceeded、或真实文案关键词（见 contextTooLongCode 注释里的实测响应）。
 //
 // 不按 status 门控：上游以 400 为主，但判定依据是业务语义而非状态码，
 // 上游若改用 413 也能识别。
 func IsContextTooLong(body string) bool {
 	var env apiEnvelope
-	if json.Unmarshal([]byte(body), &env) == nil && env.Code == contextTooLongCode {
-		return true
+	if json.Unmarshal([]byte(body), &env) == nil {
+		for _, code := range contextTooLongCodes {
+			if env.Code == code {
+				return true
+			}
+		}
 	}
 	var ext struct {
 		ExtError struct {

@@ -5,7 +5,10 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Copy,
+  FolderOpen,
   LayoutGrid,
   Loader2,
   Play,
@@ -37,6 +40,7 @@ import { useVisibilityInterval } from "@/lib/use-visibility-interval";
 import type {
   CreditStatistics,
   GatewayConfig,
+  GatewayLogResult,
   GatewayMode,
   GatewayPoolAccount,
   GatewayPortCheck,
@@ -460,6 +464,114 @@ function PoolAccountRow({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 网关日志面板（#29）。
+ *
+ * 为什么单独抽一个组件：它内部有「展开/收起 + 加载 + 手动刷新」三份状态，
+ * 混进主组件会把 GatewayPage 的状态表继续撑大；而且日志只有在需要排查时才看，
+ * 默认收起能让「诊断」区块保持原有的紧凑观感。
+ */
+function GatewayLogPanel() {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [log, setLog] = useState<GatewayLogResult | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setLog(await api.readGatewayLog(500));
+    } catch (e) {
+      toast.error(`读取日志失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // 展开时才拉取：收起状态不必占用一次 IPC（日志可能到 MB 级）。
+  useEffect(() => {
+    if (open && !log) void load();
+  }, [open, log, load]);
+
+  const lines = log?.lines ?? [];
+  const hasLog = (log?.totalBytes ?? 0) > 0 && lines.length > 0;
+
+  return (
+    <>
+      <Row>
+        <div className="min-w-0">
+          <div className="text-[13px]">网关日志</div>
+          <div className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
+            {log?.path || "gateway.log"}
+          </div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            记录每次请求的 TTFB、token 统计与上游原始错误体；按 5 MB 轮转，保留 3 份历史
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => {
+              void (async () => {
+                try {
+                  // webui 无法打开宿主文件管理器，此时退回展示路径提示。
+                  const r = await api.revealGatewayLog();
+                  if (!r.path) {
+                    toast.message("浏览器模式下无法打开文件管理器", {
+                      description: log?.path || "请在网关目录下查找 gateway.log",
+                    });
+                    return;
+                  }
+                  toast.success(r.exists ? "已在文件管理器中定位日志" : "日志尚未生成，已打开所在目录");
+                } catch (e) {
+                  toast.error(`打开失败：${e instanceof Error ? e.message : String(e)}`);
+                }
+              })();
+            }}
+            aria-label="在文件管理器中打开日志"
+          >
+            <FolderOpen className="size-3.5" />
+            打开文件
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setOpen((v) => !v)}>
+            {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {open ? "收起" : "查看日志"}
+          </Button>
+        </div>
+      </Row>
+      {open ? (
+        <div className="px-4 pb-4 sm:px-5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-[11px] text-muted-foreground">
+              {loading
+                ? "读取中…"
+                : hasLog
+                  ? `末尾 ${lines.length} 行${log?.truncated ? "（仅显示尾部，完整内容请打开文件）" : ""}`
+                  : "还没有日志：网关启动后的请求会记录在这里"}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 text-[11px]"
+              onClick={() => void load()}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+              刷新
+            </Button>
+          </div>
+          {/* 定高 + 滚动：日志行数不定，不限高会把整页撑长。
+              等宽字体 + 横向滚动保证表格型日志（`| #001 | ...`）不被折行破坏对齐。 */}
+          <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/40 p-3 font-mono text-[11px] leading-5 whitespace-pre">
+            {hasLog ? lines.join("\n") : "（空）"}
+          </pre>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1742,6 +1854,7 @@ ANTHROPIC_AUTH_TOKEN=${apiKey || "<你的 api_key>"}`}</code>
             {status?.exeFound ? "已就绪" : "缺失"}
           </Badge>
         </Row>
+        <GatewayLogPanel />
       </Section>
     </div>
     </TooltipProvider>
