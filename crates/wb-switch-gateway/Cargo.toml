@@ -1,8 +1,8 @@
-﻿[package]
+[package]
 name = "wb-switch-gateway"
 version = "0.8.10"
 edition = "2021"
-description = "workbuddy2api 缃戝叧鍐呮牳锛圧ust 鐗堬級锛氳处鍙锋睜 + OpenAI 鍏煎 HTTP 鎺ュ彛锛屾浛浠ｅ師 Go gateway.exe"
+description = "workbuddy2api 网关内核（Rust 版）：账号池 + OpenAI 兼容 HTTP 接口，替代原 Go gateway.exe"
 
 [dependencies]
 wb-switch-core = { path = "../wb-switch-core" }

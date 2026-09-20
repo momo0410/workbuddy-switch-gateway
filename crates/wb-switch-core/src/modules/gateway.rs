@@ -183,10 +183,13 @@ pub fn read_gateway_log_tail(max_lines: usize, max_bytes: u64) -> Value {
     if start > 0 && !lines.is_empty() {
         lines.remove(0);
     }
+    // 注意：`truncated` 必须在 drain **之前**判定 —— drain 之后长度必然 <= max_lines，
+    // 那时再比较会恒为 false，「仅显示尾部」的提示就永远不会出现。
     let truncated = lines.len() > max_lines;
     if truncated {
         lines.drain(..lines.len() - max_lines);
     }
+    debug_assert!(lines.len() <= max_lines, "drain 后不得超出行数上限");
 
     json!({
         "ok": true,

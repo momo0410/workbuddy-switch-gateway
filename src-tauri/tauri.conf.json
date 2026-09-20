@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WorkBuddy Switch Gateway",
   "version": "0.8.10",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "WorkBuddy Switch Gateway 路 璐﹀彿绠＄悊 + 鍏煎缃戝叧",
+        "title": "WorkBuddy Switch Gateway · 账号管理 + 兼容网关",
         "width": 1000,
         "height": 720,
         "minWidth": 720,

@@ -1,8 +1,8 @@
-﻿[package]
+[package]
 name = "wb-switch-core"
 version = "0.8.10"
 edition = "2021"
-description = "wb-switch 鏍稿績閫昏緫锛堣处鍙?鍒囨崲/浼氳瘽/绛惧埌/鏇存柊锛夛紝涓嶄緷璧?Tauri锛屽彲琚闈㈢涓?HTTP server 澶嶇敤"
+description = "wb-switch 核心逻辑（账号/切换/会话/签到/更新），不依赖 Tauri，可被桌面端与 HTTP server 复用"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -12,13 +12,13 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 chrono = "0.4"
-# 鍐呭祵鍘嬬缉鍚庣殑 gateway.exe锛堝崟鏂囦欢鍒嗗彂锛夛紝杩愯鏃惰В鍘嬪埌缂撳瓨
+# 内嵌压缩后的 gateway.exe（单文件分发），运行时解压到缓存
 flate2 = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # CodeBuddy CN IDE Safe Storage (state.vscdb secret inject)
-# aes/cbc/pbkdf2/sha1 渚?macOS锛圞eychain鈫扨BKDF2-SHA1鈫扐ES-128-CBC锛変笌
-# Linux锛坰ecret-tool鈫扐ES-128-CBC锛夊垎鏀娇鐢紱Windows 鍒嗘敮鍙敤 aes-gcm銆?
+# aes/cbc/pbkdf2/sha1 供 macOS（Keychain→PBKDF2-SHA1→AES-128-CBC）与
+# Linux（secret-tool→AES-128-CBC）分支使用；Windows 分支只用 aes-gcm。
 aes = "0.8"
 cbc = "0.1"
 pbkdf2 = "0.12"
@@ -27,10 +27,10 @@ aes-gcm = "0.10"
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
-# Win32_System_JobObjects / Win32_System_Threading / Win32_Security 渚涚綉鍏冲瓙杩涚▼鐨?
-# Job Object 瀛ゅ効闃叉姢浣跨敤锛堝簲鐢ㄩ€€鍑烘椂杩炲甫缁堟 gateway.exe锛夈€?
+# Win32_System_JobObjects / Win32_System_Threading / Win32_Security 供网关子进程的
+# Job Object 孤儿防护使用（应用退出时连带终止 gateway.exe）。
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [build-dependencies]
-# 鏋勫缓鏈熷帇缂╁唴宓岀綉鍏?
+# 构建期压缩内嵌网关
 flate2 = "1"
