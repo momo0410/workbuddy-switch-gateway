@@ -1579,22 +1579,52 @@ pub async fn fetch_models() -> Vec<Value> {
 ///
 /// 取自上游已知的常用模型；运行中的网关会返回更权威的动态列表，
 /// 此处仅保证「未启动时也能选」。
+///
+/// # 为什么必须与网关侧的静态表保持同源
+///
+/// 网关 crate（`wb-switch-gateway::server::static_models_cn` /
+/// `static_models_intl`）持有同一份清单。两处**必须**一起维护：网关运行时
+/// `/v1/models` 走网关侧那张表，网关未启动时走本表。一旦本表落后，就会出现
+/// 「先配模型、后启动网关」的用户**在下拉里看不到自己刚选的模型**——
+/// 而网关启动后又突然出现，表现为「配了但没生效」（实测缺陷：#26）。
+///
+/// 曾经的漏项全部是**限免/国服常用模型**（`hy3`、`glm-5.1`、`kimi-k2.7` 等），
+/// 恰恰是只跑限免的用户最需要的那几个，因此漏项的影响面远大于数量占比。
+///
+/// 修改时请同步 `crates/wb-switch-gateway/src/server.rs` 的两张表。
+/// `static_models_contains_cn_free_tier_models` 单测会在常用名缺失时报错。
 fn static_models() -> Vec<Value> {
     const IDS: &[&str] = &[
-        "deepseek-v4.1-flash",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-        "deepseek-v3-2-volc",
-        "glm-5.3",
-        "glm-5.3-flash",
+        // —— 国服（CN）清单 —— //
         "glm-5.2",
-        "glm-4.7",
-        "kimi-k3-1",
-        "kimi-k2.5",
+        "glm-5.1",
+        "glm-5v-turbo",
+        "kimi-k2.7",
         "minimax-m3",
-        "hunyuan-chat",
+        "hy3",
+        "hy3-preview",
+        "hy3-preview-agent",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        // —— 国际版（INTL）清单 —— //
+        "default-model",
+        "fast-model",
+        "balanced-model",
+        "primary-model",
+        "deep-model",
+        "hy4-preview",
+        "deepseek-v4.1-flash",
+        "gpt-6-astra",
         "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
         "gemini-3.5-flash",
+        "glm-5.3",
+        "kimi-k3",
+        "kimi-k2.6",
     ];
     IDS.iter()
         .map(|id| json!({ "id": id, "object": "model", "owned_by": "workbuddy" }))
@@ -2322,5 +2352,47 @@ mod tests {
             "已登记进 Job 的子进程应能走 Job 收尾（无需 spawn taskkill）"
         );
         wait_exit(&mut child, "terminate_gateway_job");
+    }
+
+    /// 回退清单必须能覆盖「先配后启动」的完整流程。
+    ///
+    /// 缺陷背景（#26）：模型锁定配置发生在**启动网关之前**，此时
+    /// `fetch_models()` 只能走本文件的 `static_models()`。用户要用的 `hy3`
+    /// 恰好在网关侧表里有、在本表里没有 —— 于是下拉里选不到自己刚配的模型。
+    #[test]
+    fn static_models_contains_cn_free_tier_models() {
+        let ids: Vec<String> = static_models()
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        // 只跑限免的用户（#26 原话：「hy3 限免，我想用限免」）依赖这几个名字。
+        for need in ["hy3", "hy3-preview", "glm-5.1", "kimi-k2.7"] {
+            assert!(
+                ids.iter().any(|id| id == need),
+                "回退清单缺少 `{need}`：先配后启动时下拉会缺这个名字（见 #26）"
+            );
+        }
+    }
+
+    /// 回退清单不得退化：条目数只增不减，且 id 非空、无重复。
+    #[test]
+    fn static_models_are_well_formed() {
+        let ids: Vec<String> = static_models()
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        assert!(
+            ids.len() >= 28,
+            "回退清单条目数异常偏少（{}），疑似被误删",
+            ids.len()
+        );
+        assert!(ids.iter().all(|id| !id.is_empty()), "模型 id 不得为空");
+
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            assert!(seen.insert(id.clone()), "模型 id 重复：{id}");
+        }
     }
 }
