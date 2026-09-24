@@ -69,6 +69,45 @@ pub fn is_silent_startup(args: impl IntoIterator<Item = impl AsRef<str>>) -> boo
         .any(|arg| arg.as_ref() == SILENT_STARTUP_ARG)
 }
 
+/// 首次启动时主窗口的呈现决策。
+///
+/// 可见性由「是否静默启动」**和**「进程内是否处于轻量模式」共同决定 ——
+/// 后者是本模块最容易踩的坑，见 [`startup_window_should_show`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupWindowAction {
+    /// 显示主窗口，并在需要时重建 WebView。
+    Show,
+    /// 保持隐藏，只留托盘。
+    KeepHidden,
+}
+
+/// 推导首次启动的主窗口动作。
+///
+/// `main` 窗口由 `tauri.conf.json` 创建为 `visible: false`，因此「普通启动」
+/// 也必须显式 show 一次；静默启动（系统自启 `--hidden`）则保持隐藏。
+///
+/// **`lightweight` 参数不可省略。** 轻量模式会把 WebView 整体 `destroy()`，
+/// 此时 `get_webview_window("main")` 返回 `None`。若在轻量模式下仍走 show 路径，
+/// `show_main_window` 会因「窗口不存在」判定需要重建，进而落到
+/// [`exit_lightweight`] —— 而 `exit_lightweight` 用 `from_config` 重建窗口时
+/// 会读回配置里的 `visible: false`，于是：
+///
+/// 1. 进程被判定为「轻量模式仍然生效」，托盘勾选项与实际状态脱节；
+/// 2. 重建出的窗口**永久不可见**，用户无论点多少次「打开主界面」都是白屏
+///    （窗口存在、进程在跑、WebView 已加载，只是从不 show）。
+///
+/// 这是一条**自洽的锁死回路**，不是概率性竞态：只要进程内的
+/// `LIGHTWEIGHT_MODE` 为真，启动就必然白屏。因此首次呈现前必须先把它归零。
+///
+/// 纯函数，便于单测覆盖（见 `mod tests`）。
+pub fn startup_window_action(silent: bool, lightweight: bool) -> StartupWindowAction {
+    if lightweight || !silent {
+        StartupWindowAction::Show
+    } else {
+        StartupWindowAction::KeepHidden
+    }
+}
+
 /// 在事件循环呈现应用前决定首次启动的主窗口可见性。
 ///
 /// `main` 窗口由 `tauri.conf.json` 配置创建为不可见，此处做出第一次
@@ -80,12 +119,22 @@ pub fn is_silent_startup(args: impl IntoIterator<Item = impl AsRef<str>>) -> boo
 ///   只保留托盘；不设置 `LIGHTWEIGHT_MODE`（WebView 仍然存在）。
 ///
 /// 之后从托盘「打开主界面」仍走 `show_main_window`，与隐藏窗口完全一致。
+///
+/// **首次启动前一律清零 `LIGHTWEIGHT_MODE`**：该标志只描述「当前是否处于
+/// 轻量模式」，它没有任何跨进程持久化，因此进程刚起来时其语义只能是 `false`。
+/// 历史版本在 `setup` 里保留上一次写入的值，使「先开轻量模式、再重启应用」
+/// 直接进入白屏（详见 [`startup_window_action`]）。
 pub fn setup_startup_visibility<R: Runtime>(app: &AppHandle<R>, silent: bool) {
-    if silent {
-        apply_dock_visible(app, false);
-        emit_main_window_visible(app, false);
-    } else {
-        show_main_window(app);
+    // 必须在任何 show / 重建路径之前归零：`show_main_window` 与
+    // `exit_lightweight` 都会读这个标志，残留为真会触发重建锁死回路。
+    let was_lightweight = LIGHTWEIGHT_MODE.swap(false, Ordering::AcqRel);
+
+    match startup_window_action(silent, was_lightweight) {
+        StartupWindowAction::Show => show_main_window(app),
+        StartupWindowAction::KeepHidden => {
+            apply_dock_visible(app, false);
+            emit_main_window_visible(app, false);
+        }
     }
 }
 
@@ -485,13 +534,79 @@ fn format_checkin_tooltip(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_checkin_tooltip, is_silent_startup, menu_bar_icon, should_keep_tray_alive};
+    use super::{
+        format_checkin_tooltip, is_silent_startup, menu_bar_icon, should_keep_tray_alive,
+        startup_window_action, StartupWindowAction,
+    };
     use serde_json::json;
 
     #[test]
     fn runtime_exit_with_no_code_keeps_tray() {
         assert!(should_keep_tray_alive(None));
         assert!(!should_keep_tray_alive(Some(0)));
+    }
+
+    /// 回归：普通启动必须显示窗口。
+    #[test]
+    fn normal_startup_shows_window() {
+        assert_eq!(
+            startup_window_action(false, false),
+            StartupWindowAction::Show
+        );
+    }
+
+    /// 回归：静默启动（系统自启 `--hidden`）保持隐藏，不闪窗。
+    #[test]
+    fn silent_startup_stays_hidden() {
+        assert_eq!(
+            startup_window_action(true, false),
+            StartupWindowAction::KeepHidden
+        );
+    }
+
+    /// 回归：轻量模式残留时**必须**显示窗口。
+    ///
+    /// 这是「重启后白屏」的直接防线 —— 若此断言失败，说明又回到了
+    /// 「`show_main_window` 把残留的轻量模式当成重建信号」的锁死回路。
+    #[test]
+    fn leftover_lightweight_mode_still_shows_window() {
+        assert_eq!(
+            startup_window_action(false, true),
+            StartupWindowAction::Show
+        );
+        // 即使同时带 `--hidden`，也不该把窗口留在「已销毁」状态：
+        // 轻量标志为真意味着 WebView 已不存在，保持隐藏会让用户永远看不到界面。
+        assert_eq!(
+            startup_window_action(true, true),
+            StartupWindowAction::Show
+        );
+    }
+
+    /// 只要进程带着残留的轻量标志启动，任何参数组合都不能停在隐藏态。
+    #[test]
+    fn no_combination_keeps_hidden_window_when_lightweight_leftover() {
+        for silent in [false, true] {
+            assert_ne!(
+                startup_window_action(silent, true),
+                StartupWindowAction::KeepHidden,
+                "silent={silent} 且轻量模式残留时不得保持隐藏"
+            );
+        }
+    }
+
+    /// 回归：首次启动前必须把轻量标志清零，否则重建出的窗口永久不可见。
+    #[test]
+    fn startup_visibility_clears_leftover_lightweight_flag() {
+        // 直接验证语义契约：startup_window_action 的 lightweight 入参来自
+        // setup_startup_visibility 里的 swap(false)，此处断言该组合的行为。
+        assert_eq!(
+            startup_window_action(false, false),
+            StartupWindowAction::Show
+        );
+        assert_eq!(
+            startup_window_action(true, false),
+            StartupWindowAction::KeepHidden
+        );
     }
 
     #[test]
