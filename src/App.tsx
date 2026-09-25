@@ -16,6 +16,7 @@ import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
+import { PageErrorBoundary } from "@/components/error-boundary";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
 import { useCreditAutoRefresh } from "@/lib/use-credit-auto-refresh";
@@ -214,7 +215,9 @@ function Layout() {
           hasUnifiedTitleBar && "pt-16 [&>div]:pt-4",
         )}
       >
-        <Outlet />
+        <PageErrorBoundary label="账号管理">
+          <Outlet />
+        </PageErrorBoundary>
       </main>
     </div>
   );

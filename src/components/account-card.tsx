@@ -104,7 +104,10 @@ function accountDetailRows(account: AccountMeta): [string, string, string?][] {
   const fmt = (ts: number | null | undefined) =>
     typeof ts === "number" && ts > 0 ? new Date(ts).toLocaleString("zh-CN") : "";
   return [
-    ["备注", account.note ?? "", "你自己填的标签，用于区分这是谁的号"],
+    // 备注强制转字符串：后端理论上保证 note 为 string|null，但万一返回对象
+    // （如 issue #36 的加密信封 `{ $wbEncrypted, envelope }`），直接渲染对象会触发
+    // React #31 整页白屏。这里兜底成字符串，配合后端 coerce 双保险。
+    ["备注", account.note ? String(account.note) : "", "你自己填的标签，用于区分这是谁的号"],
     ["昵称", account.nickname ?? ""],
     ["邮箱", account.email ?? "", "国际版账号通常靠它辨认"],
     ["手机号", account.phoneNumber ?? "", "国服账号的邮箱常为空，手机号是主要线索"],
@@ -380,9 +383,9 @@ export function AccountCard({ account, onDelete, onNoteSaved, onCheckin, onRefre
       {/* 备注放在最前面：它是用户自己起的标签，正是用来「一眼认出这是谁的号」的，
           排在区域/签到等自动状态之前才符合使用意图。 */}
       {account.note ? (
-        <Badge variant="outline" className={cn(chipClass, "max-w-[12rem] gap-1")} title={`备注：${account.note}`}>
+        <Badge variant="outline" className={cn(chipClass, "max-w-[12rem] gap-1")} title={`备注：${String(account.note)}`}>
           <PencilLine className="size-3 shrink-0" />
-          <span className="truncate">{account.note}</span>
+          <span className="truncate">{String(account.note)}</span>
         </Badge>
       ) : null}
       {regionChip(account)}
@@ -717,7 +720,7 @@ export function AccountCard({ account, onDelete, onNoteSaved, onCheckin, onRefre
       <Dialog
         open={noteOpen}
         onOpenChange={(open) => {
-          if (open) setNoteDraft(account.note ?? "");
+          if (open) setNoteDraft(account.note ? String(account.note) : "");
           setNoteOpen(open);
         }}
       >
@@ -747,7 +750,7 @@ export function AccountCard({ account, onDelete, onNoteSaved, onCheckin, onRefre
             <Button variant="outline" onClick={() => setNoteOpen(false)} disabled={noteSaving}>
               取消
             </Button>
-            <Button onClick={() => void submitNote()} disabled={noteSaving || noteDraft.trim() === (account.note ?? "")}>
+            <Button onClick={() => void submitNote()} disabled={noteSaving || noteDraft.trim() === (account.note ? String(account.note) : "")}>
               {noteSaving ? <Loader2 className="animate-spin" /> : <Save />}
               保存
             </Button>

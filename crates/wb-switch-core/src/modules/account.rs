@@ -125,21 +125,36 @@ pub fn account_meta(acc: &Value) -> Value {
         "needsRelogin": acc.get("needs_relogin").and_then(|v| v.as_bool()) == Some(true),
         "needsReloginReason": acc.get("needs_relogin_reason"),
         // 备注：用户自定义标签，用于认出「这是谁的号」。
-        "note": acc.get("note"),
+        // 强制为字符串或 null：账号库里若混入了对象（如上游鉴权文件的加密信封
+        // `{ $wbEncrypted, envelope }` 被误存进 note），原样透传会在前端渲染时
+        // 触发 React #31（"Objects are not valid as a React child"）导致整页白屏。
+        // 见 issue #36。
+        "note": acc
+            .get("note")
+            .and_then(Value::as_str)
+            .map(Value::from)
+            .unwrap_or(Value::Null),
         // 原始域名（如 www.workbuddy.ai / copilot.tencent.com）：
         // 区域标签只给「国服/国际版」，排查问题时常需要看确切域名。
-        "domain": acc.get("domain"),
+        "domain": acc
+            .get("domain")
+            .and_then(Value::as_str)
+            .map(Value::from)
+            .unwrap_or(Value::Null),
         // 手机号（国服账号的真实身份线索，邮箱常为空）。
+        // 同样强制为字符串或 null，避免 profile_raw 字段类型异常时把对象透传到前端。
         "phoneNumber": acc
             .get("profile_raw")
             .and_then(|p| p.get("phoneNumber"))
-            .cloned()
+            .and_then(Value::as_str)
+            .map(Value::from)
             .unwrap_or(Value::Null),
         // 账号类型（personal / enterprise）：影响可用模型与额度口径。
         "accountType": acc
             .get("profile_raw")
             .and_then(|p| p.get("type"))
-            .cloned()
+            .and_then(Value::as_str)
+            .map(Value::from)
             .unwrap_or(Value::Null),
     })
 }
@@ -340,6 +355,37 @@ mod tests {
         assert!(meta["domain"].is_null());
         assert!(meta["phoneNumber"].is_null(), "无 profile_raw 时不应 panic");
         assert!(meta["accountType"].is_null());
+    }
+
+    /// 回归：账号库里若混入了非字符串字段（如上游鉴权文件的加密信封
+    /// `{ $wbEncrypted, envelope }` 被误存进 note / profile_raw），`account_meta`
+    /// 必须强制为 null，绝不能把对象透传到前端——否则前端直接渲染该对象会抛
+    /// React error #31（"Objects are not valid as a React child"）导致整页白屏。
+    /// 见 issue #36。
+    #[test]
+    fn account_meta_coerces_non_scalar_fields_to_null() {
+        let acc = json!({
+            "id": "a1",
+            "uid": "u1",
+            "note": { "$wbEncrypted": true, "envelope": "abc" },
+            "domain": 12345,
+            "profile_raw": { "phoneNumber": { "encrypted": "x" }, "type": 7 }
+        });
+        let meta = account_meta(&acc);
+        assert!(meta["note"].is_null(), "对象型 note 必须被丢弃为 null，而非透传对象");
+        assert!(meta["domain"].is_null(), "数字型 domain 必须被丢弃为 null");
+        assert!(meta["phoneNumber"].is_null(), "对象型 phoneNumber 必须被丢弃为 null");
+        assert!(meta["accountType"].is_null(), "数字型 accountType 必须被丢弃为 null");
+    }
+
+    /// 反向验证：故意把对象型 note 透传（旧行为），确认它会确实产出对象——
+    /// 以此证明上面的 coerce 修复确实消除了 React #31 的触发条件。
+    #[test]
+    fn account_meta_old_behavior_leaks_object_note() {
+        let acc = json!({ "id": "a1", "uid": "u1", "note": { "$wbEncrypted": true, "envelope": "abc" } });
+        // 旧实现等价于 `acc.get("note")`，会原样保留对象。
+        let leaked = acc.get("note").expect("测试数据含 note");
+        assert!(leaked.is_object(), "旧行为：对象型 note 原样透传，正是白屏根因");
     }
 
     /// 备注读取：有则取值，无则空串（区别于 account_meta 的 null 语义）。
