@@ -103,6 +103,18 @@ pub fn set_account_note(account_id: &str, note: &str) -> Result<Value, String> {
     Ok(updated)
 }
 
+/// 展示字段安全化：只接受字符串，其余（数字 / 布尔 / 对象 / 数组 / 缺失）一律归一成 null。
+///
+/// 上游鉴权文件里的加密信封 `{ $wbEncrypted, envelope }` 是对象，若原样透传到
+/// 前端，会被 React 当作子节点渲染而抛 `#31`（"Objects are not valid as a React
+/// child"），导致账号页整页白屏。见 issue #36 / #38。
+pub fn display_string(v: Option<&Value>) -> Value {
+    match v.and_then(Value::as_str) {
+        Some(s) => Value::String(s.to_string()),
+        None => Value::Null,
+    }
+}
+
 /// 账号的展示元数据（不泄露 token）。对照 server.py `account_meta`。
 pub fn account_meta(acc: &Value) -> Value {
     // 区域由 domain 后缀推导（国服 .cn / 国际版 .ai），供界面区分展示。
@@ -114,10 +126,10 @@ pub fn account_meta(acc: &Value) -> Value {
             crate::modules::config::Region::Intl => "intl",
         },
         "id": acc.get("id"),
-        "uid": acc.get("uid"),
-        "email": acc.get("email"),
-        "nickname": acc.get("nickname"),
-        "enterpriseName": acc.get("enterpriseName"),
+        "uid": display_string(acc.get("uid")),
+        "email": display_string(acc.get("email")),
+        "nickname": display_string(acc.get("nickname")),
+        "enterpriseName": display_string(acc.get("enterpriseName")),
         "expiresAt": acc.get("expiresAt"),
         "refreshExpiresAt": acc.get("refreshExpiresAt"),
         "refreshedAt": acc.get("refreshedAt"),
@@ -128,34 +140,16 @@ pub fn account_meta(acc: &Value) -> Value {
         // 强制为字符串或 null：账号库里若混入了对象（如上游鉴权文件的加密信封
         // `{ $wbEncrypted, envelope }` 被误存进 note），原样透传会在前端渲染时
         // 触发 React #31（"Objects are not valid as a React child"）导致整页白屏。
-        // 见 issue #36。
-        "note": acc
-            .get("note")
-            .and_then(Value::as_str)
-            .map(Value::from)
-            .unwrap_or(Value::Null),
+        // 见 issue #36 / #38。
+        "note": display_string(acc.get("note")),
         // 原始域名（如 www.workbuddy.ai / copilot.tencent.com）：
         // 区域标签只给「国服/国际版」，排查问题时常需要看确切域名。
-        "domain": acc
-            .get("domain")
-            .and_then(Value::as_str)
-            .map(Value::from)
-            .unwrap_or(Value::Null),
+        "domain": display_string(acc.get("domain")),
         // 手机号（国服账号的真实身份线索，邮箱常为空）。
         // 同样强制为字符串或 null，避免 profile_raw 字段类型异常时把对象透传到前端。
-        "phoneNumber": acc
-            .get("profile_raw")
-            .and_then(|p| p.get("phoneNumber"))
-            .and_then(Value::as_str)
-            .map(Value::from)
-            .unwrap_or(Value::Null),
+        "phoneNumber": display_string(acc.get("profile_raw").and_then(|p| p.get("phoneNumber"))),
         // 账号类型（personal / enterprise）：影响可用模型与额度口径。
-        "accountType": acc
-            .get("profile_raw")
-            .and_then(|p| p.get("type"))
-            .and_then(Value::as_str)
-            .map(Value::from)
-            .unwrap_or(Value::Null),
+        "accountType": display_string(acc.get("profile_raw").and_then(|p| p.get("type"))),
     })
 }
 
@@ -396,6 +390,39 @@ mod tests {
         assert_eq!(account_note(&json!({})), "");
         assert_eq!(account_note(&json!({"note": ""})), "");
         assert_eq!(account_note(&json!({"note": "   "})), "", "纯空白视为无备注");
+    }
+
+    /// `display_string` 是 issue #36 / #38 的统一防线：只收字符串，其余一律归一成 null。
+    #[test]
+    fn display_string_keeps_string_and_nulls_everything_else() {
+        assert_eq!(display_string(Some(&json!("小明"))), "小明");
+        assert!(display_string(Some(&json!(12345))).is_null(), "数字必须归一成 null");
+        assert!(display_string(Some(&json!(true))).is_null(), "布尔必须归一成 null");
+        // 加密信封对象正是 issue #38 的复现数据。
+        let envelope = json!({ "$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MX0=" });
+        assert!(display_string(Some(&envelope)).is_null(), "信封对象必须归一成 null");
+        assert!(display_string(Some(&json!([1, 2, 3]))).is_null(), "数组必须归一成 null");
+        assert!(display_string(None).is_null(), "缺失必须为 null");
+    }
+
+    /// 回归：account_meta 的身份展示字段（uid / email / nickname / enterpriseName）
+    /// 若混入加密信封对象，必须归一成 null，绝不能透传对象到前端触发 React #31。
+    /// 这是 issue #38 在 get_status 之外的同源隐患（get_accounts 走 account_meta）。
+    #[test]
+    fn account_meta_coerces_envelope_identity_fields_to_null() {
+        let acc = json!({
+            "id": "a1",
+            "uid": { "$wbEncrypted": 1, "envelope": "e1" },
+            "email": "x@y.z",
+            "nickname": { "$wbEncrypted": 1, "envelope": "e2" },
+            "enterpriseName": { "$wbEncrypted": 1, "envelope": "e3" },
+        });
+        let meta = account_meta(&acc);
+        assert!(meta["uid"].is_null(), "信封对象 uid 必须归一成 null");
+        assert!(meta["nickname"].is_null(), "信封对象 nickname 必须归一成 null");
+        assert!(meta["enterpriseName"].is_null(), "信封对象 enterpriseName 必须归一成 null");
+        assert_eq!(meta["email"], "x@y.z", "正常邮箱字符串不受影响");
+        assert_eq!(meta["id"], "a1", "id 保持原样（前端要求必填字符串）");
     }
 
     #[test]

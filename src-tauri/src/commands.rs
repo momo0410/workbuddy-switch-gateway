@@ -32,15 +32,23 @@ pub async fn get_status() -> Result<AppStatus, String> {
         .map_err(|error| format!("查询应用状态失败: {error}"))
 }
 
+/// 把鉴权文件解析出的 account 规整成「当前账号」展示对象。
+///
+/// 所有字段强制为字符串或 null（见 `account::display_string`），阻断加密信封
+/// 对象 `{ $wbEncrypted, envelope }` 透传到前端触发 React #31。见 issue #38。
+fn build_current_account(acct: &Value) -> Value {
+    json!({
+        "uid": account::display_string(acct.get("uid")),
+        "nickname": account::display_string(acct.get("nickname")),
+        "email": account::display_string(acct.get("email")),
+    })
+}
+
 fn build_app_status() -> AppStatus {
     let auth = auth_file::read_auth_file();
-    let current = auth.as_ref().and_then(|a| {
+    let current = auth.as_ref().map(|a| {
         let acct = a.get("account").cloned().unwrap_or_else(|| json!({}));
-        Some(json!({
-            "uid": acct.get("uid"),
-            "nickname": acct.get("nickname"),
-            "email": acct.get("email"),
-        }))
+        build_current_account(&acct)
     });
     AppStatus {
         running: process::is_workbuddy_running(),
@@ -615,6 +623,40 @@ mod relaunch_tests {
         assert!(should_forward_relaunch_arg(OsStr::new("--hidden-x")));
         assert!(should_forward_relaunch_arg(OsStr::new("x--hidden")));
         assert!(should_forward_relaunch_arg(OsStr::new("--debug")));
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod status_current_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 回归：get_status 的 current.nickname 若携带加密信封对象（issue #38 复现数据），
+    /// 必须归一成 null，绝不能把对象透传到前端触发 React #31。
+    #[test]
+    fn build_current_account_coerces_envelope_to_null() {
+        let acct = json!({
+            "uid": "u1",
+            "nickname": { "$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MX0=" },
+            "email": "x@y.z"
+        });
+        let cur = build_current_account(&acct);
+        assert!(cur["nickname"].is_null(), "信封对象 nickname 必须归一成 null，否则前端 React #31");
+        assert_eq!(cur["uid"], "u1", "正常字符串不受影响");
+        assert_eq!(cur["email"], "x@y.z", "正常字符串不受影响");
+    }
+
+    #[test]
+    fn build_current_account_handles_missing_and_string_fields() {
+        let cur = build_current_account(&json!({}));
+        assert!(cur["uid"].is_null());
+        assert!(cur["nickname"].is_null());
+        assert!(cur["email"].is_null());
+
+        let cur2 = build_current_account(&json!({ "uid": "u9", "nickname": "阿强", "email": "" }));
+        assert_eq!(cur2["uid"], "u9");
+        assert_eq!(cur2["nickname"], "阿强");
+        assert_eq!(cur2["email"], "", "空串仍是合法字符串，不应被丢弃");
     }
 }
 
